@@ -80,6 +80,7 @@ class Store:
         self.watching = {}         # camera -> open live views
         self.pushed_at = 0.0
         self.viewer_at = 0.0       # when a logged-in page last polled the status
+        self.login = None          # (salt, sha256) of the cloud password, sent by the office
 
     def want(self):
         """Pictures the office should send, and how often (s)."""
@@ -184,11 +185,41 @@ def live_response(cam_id, blank):
 
 
 NO_PASSWORD = """<!doctype html><meta charset="utf-8"><title>OfficeEye</title>
+<meta name="robots" content="noindex, nofollow">
 <body style="font:15px system-ui;padding:40px;max-width:640px">
-<h2>OfficeEye cloud view is locked</h2>
-<p>No password is set. In Render open this service -> <b>Environment</b> and add
-<code>OFFICEEYE_PASSWORD</code> (the password to log in) and
-<code>OFFICEEYE_PUSH_TOKEN</code> (from the office PC: Settings -> Cloud view).</p>"""
+<h2>OfficeEye cloud view - waiting for the office PC</h2>
+<p>The office PC has not connected yet, so there is no password to log in with.
+On the office PC open <b>Settings -> Cloud view</b> and set <b>Send to the cloud</b>
+to <i>On</i>; this page then asks for the password shown there. (It can take a
+minute after the cloud view wakes up.)</p>"""
+
+
+# The office's push token is checked against its SHA-256, kept in the
+# repository (cloud_push.sha256), so a fresh cloud host needs no settings.
+# The hash does not give the token away. OFFICEEYE_PUSH_TOKEN, when set on
+# the host, is used instead.
+_HASH_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cloud_push.sha256")
+
+
+def _token_hash():
+    try:
+        with open(_HASH_FILE, encoding="utf-8") as f:
+            return f.read().strip().lower()
+    except OSError:
+        return ""
+
+
+def _pw_hash(salt, password):
+    return hashlib.sha256((salt + ":" + password).encode()).hexdigest()
+
+
+def _login_key():
+    """What a session is tied to: the host's password, or the one the office
+    sent. A new password logs everybody out."""
+    if PASSWORD:
+        return hashlib.sha256(("env:" + PASSWORD).encode()).hexdigest()[:16]
+    with store.lock:
+        return store.login[1][:16] if store.login else None
 
 _failures = {}             # ip -> [times of wrong passwords]
 
@@ -202,7 +233,12 @@ def _json_body():
 
 def _token_ok():
     sent = request.headers.get("Authorization", "")
-    return bool(PUSH_TOKEN) and hmac.compare_digest(sent.encode(), ("Bearer " + PUSH_TOKEN).encode())
+    if PUSH_TOKEN:
+        return hmac.compare_digest(sent.encode(), ("Bearer " + PUSH_TOKEN).encode())
+    want = _token_hash()
+    if not want or not sent.startswith("Bearer "):
+        return False
+    return hmac.compare_digest(hashlib.sha256(sent[7:].encode()).hexdigest(), want)
 
 
 def _photo_names(meta):
@@ -225,8 +261,12 @@ def _clean_row(r):
 
 
 def _install_cloud(app):
+    # Session cookies are signed with a secret nobody outside can know: the
+    # host's settings, or (with none) a random one until the office sends its
+    # password - then one made from that, so logins survive a restart.
     app.secret_key = (os.environ.get("OFFICEEYE_SECRET") or
-                      hashlib.sha256(("officeeye:" + PASSWORD + ":" + PUSH_TOKEN).encode()).hexdigest())
+                      (hashlib.sha256(("officeeye:" + PASSWORD + ":" + PUSH_TOKEN).encode()).hexdigest()
+                       if PASSWORD else secrets.token_hex(32)))
     app.config.update(SESSION_COOKIE_SECURE=bool(os.environ.get("RENDER")),
                       SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax",
                       PERMANENT_SESSION_LIFETIME=timedelta(days=30),
@@ -237,11 +277,13 @@ def _install_cloud(app):
         p = request.path
         if p.startswith("/api/cloud/push/") or p.startswith("/static/") or p in ("/login", "/healthz"):
             return None
-        if p == "/api/status" and not session.get("in"):
+        key = _login_key()
+        logged_in = bool(key) and session.get("in") == key
+        if p == "/api/status" and not logged_in:
             return jsonify({"login_required": True})          # health checks get a 200
-        if not PASSWORD:
+        if not key:
             return Response(NO_PASSWORD, 503, mimetype="text/html")
-        if not session.get("in"):
+        if not logged_in:
             if p.startswith(("/api/", "/frame/", "/snapshot/", "/live/", "/photos/")):
                 return jsonify({"ok": False, "message": "Log in first"}), 401
             return redirect("/login?next=" + quote(request.full_path.rstrip("?")))
@@ -260,19 +302,27 @@ def _install_cloud(app):
         nxt = request.values.get("next") or "/"
         if not nxt.startswith("/") or nxt.startswith("//"):
             nxt = "/"
-        if not PASSWORD:
+        key = _login_key()
+        if not key:
             return Response(NO_PASSWORD, 503, mimetype="text/html")
         error = ""
         if request.method == "POST":
             ip = request.headers.get("X-Forwarded-For", request.remote_addr or "").split(",")[0].strip()
             now = time.time()
             recent = [t for t in _failures.get(ip, []) if now - t < 600]
+            typed = request.form.get("password", "")
+            if PASSWORD:
+                right = hmac.compare_digest(typed.encode(), PASSWORD.encode())
+            else:
+                with store.lock:
+                    salt, want = store.login
+                right = hmac.compare_digest(_pw_hash(salt, typed), want)
             if len(recent) >= 10:
                 error = "Too many wrong passwords. Try again in a few minutes."
-            elif hmac.compare_digest(request.form.get("password", "").encode(), PASSWORD.encode()):
+            elif right:
                 _failures.pop(ip, None)
                 session.clear()
-                session["in"] = True
+                session["in"] = key
                 session.permanent = True
                 return redirect(nxt)
             else:
@@ -291,11 +341,18 @@ def _install_cloud(app):
         if not _token_ok():
             return jsonify({"ok": False, "message": "wrong push token"}), 401
         body = _json_body()
+        login = body.get("login") or {}
         with store.lock:
             store.status = body.get("status") or _empty_status()
             store.cameras = body.get("cameras") or []
             store.settings = body.get("settings") or {}
             store.pushed_at = time.time()
+            if isinstance(login.get("salt"), str) and isinstance(login.get("hash"), str) \
+                    and len(login["hash"]) == 64 and (login["salt"], login["hash"]) != store.login:
+                store.login = (login["salt"], login["hash"])
+                if not PASSWORD and not os.environ.get("OFFICEEYE_SECRET"):
+                    app.secret_key = hashlib.sha256(
+                        ("session:" + login["salt"] + login["hash"]).encode()).hexdigest()
         return jsonify({"ok": True, "want": store.want(),
                         "viewers": time.time() - store.viewer_at < 60,
                         "events_last_id": events.max_id(),
@@ -396,7 +453,8 @@ class Uplink:
             self.frames_sent = [t for t in self.frames_sent if now - t < 60]
             kb, frames = round(sum(b for _, b in self.sent) / 1024), len(self.frames_sent)
         return {"enabled": bool(cfg.get("enabled")), "url": cfg.get("url", ""),
-                "token": cfg.get("token", ""), "state": self.state, "error": self.error,
+                "token": cfg.get("token", ""), "password": cfg.get("password", ""),
+                "state": self.state, "error": self.error,
                 "ok_ago": round(now - self.ok_at, 1) if self.ok_at else None,
                 "kb_per_min": kb, "frames_per_min": frames, "viewers": self.viewers}
 
@@ -433,8 +491,13 @@ class Uplink:
             c = dict(c)
             c["url"], c["prefilled"] = "", False
             cams.append(c)
-        return {"status": st, "cameras": cams,
+        cloud = config.get("cloud")
+        body = {"status": st, "cameras": cams,
                 "settings": {k: config.get(k) for k in ("office", "detection", "photos")}}
+        if cloud.get("salt") and cloud.get("hash"):
+            # Only a salted hash of the login password leaves this PC.
+            body["login"] = {"salt": cloud["salt"], "hash": cloud["hash"]}
+        return body
 
     def _run(self):
         import requests
@@ -569,6 +632,15 @@ def _install_office(app):
             patch["url"] = url
         if body.get("new_token") or not cfg.get("token"):
             patch["token"] = secrets.token_urlsafe(32)
+        password = str(body.get("password") or "").strip()
+        if password and len(password) < 6:
+            return jsonify({"ok": False, "message": "The cloud password needs at least 6 characters"})
+        if password or not cfg.get("password"):
+            # The password to open the cloud link. It stays on this PC; the
+            # cloud copy only gets a salted hash of it.
+            password = password or "OE-" + secrets.token_urlsafe(6)
+            salt = secrets.token_hex(16)
+            patch.update(password=password, salt=salt, hash=_pw_hash(salt, password))
         if "enabled" in body:
             patch["enabled"] = bool(body["enabled"])
         config.update("cloud", patch)
