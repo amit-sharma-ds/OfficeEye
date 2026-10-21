@@ -3,10 +3,10 @@
 
 {% block body %}
 <h1>Washroom</h1>
-<p class="sub">Who went into the washroom and when, seen from the camera in the
-   corridor outside the door - with a photo of each person at the door. When it is
-   found dirty or damaged, mark it here and the people who used it since it was
-   last checked clean are listed.</p>
+<p class="sub">A photo with the time of everybody at the washroom door - taken
+   whenever the door moves or somebody comes to it - from the camera in the corridor
+   outside. When it is found dirty or damaged, mark it here and everybody at the door
+   since it was last checked clean is listed.</p>
 <p class="hint privacy">The camera must only see the corridor and the outside of the
    door - never inside the washroom. Tell the staff that the washroom door is watched.</p>
 
@@ -64,8 +64,8 @@
   </div>
   <div class="table-wrap">
     <table class="records wash">
-      <thead><tr><th>Went in</th><th></th>{% if cameras|length > 1 %}<th>Washroom</th>{% endif %}
-                 <th>Came out</th><th class="num">Inside for</th><th>Note</th></tr></thead>
+      <thead><tr><th>Time</th><th>Photo</th>{% if cameras|length > 1 %}<th>Washroom</th>{% endif %}
+                 <th>What</th><th class="num">Door busy for</th><th>Note</th></tr></thead>
       <tbody id="visits"><tr><td colspan="6" class="empty">Loading&hellip;</td></tr></tbody>
     </table>
   </div>
@@ -186,32 +186,42 @@ $$('[data-status]').forEach(b => b.onclick = async () => {
 // ------------------------------------------------------------ lists
 function photoOf(ev) { return eventThumb(ev); }
 function camOf(ev) { return names[ev.camera] || ev.camera; }
+// One line about a door record. washroom_visit is what is written now; the
+// in / out / door kinds are from the first version and still shown.
+function whatOf(ev) {
+  const m = ev.meta || {};
+  if (ev.kind === 'washroom_visit')
+    return (m.people ? `${m.people === 1 ? '1 person' : m.people + ' people'} at the door` : 'door moved, nobody seen')
+      + (m.trigger === 'door' && m.people ? ' (door moved)' : '');
+  if (ev.kind === 'washroom_in') return 'went in' + (m.out_at ? ` · out ${hm(m.out_at)}` : '');
+  if (ev.kind === 'washroom_out') return 'came out';
+  return 'door moved, nobody seen';
+}
+const nobody = (ev) => ev.kind === 'washroom_door' ||
+  (ev.kind === 'washroom_visit' && !(ev.meta || {}).people);
 function visitCard(ev, i) {
   const m = ev.meta || {};
   const th = photoOf(ev);
-  const what = ev.kind === 'washroom_in'
-    ? `went in ${hm(m.at || ev.ts)}` + (m.out_at ? ` · out ${hm(m.out_at)} · ${dur(m.seconds)}` : ' · not seen coming out')
-    : ev.kind === 'washroom_out' ? `came out ${hm(m.at || ev.ts)}` + (m.seconds != null ? ` · was inside ${dur(m.seconds)}` : ' · going in not seen')
-    : `door used ${hm(m.at || ev.ts)} · nobody seen`;
-  return `<button class="incident ${ev.kind === 'washroom_door' ? 'amber' : 'blue'}" data-i="${i}">` +
+  const when = `${(m.at || ev.ts).slice(5, 10)} ${hm(m.at || ev.ts)}`;
+  return `<button class="incident ${nobody(ev) ? 'amber' : 'blue'}" data-i="${i}">` +
     (th ? `<img src="${esc(th)}" alt="">` : '<span class="noimg">no photo</span>') +
-    `<div class="inc-body"><b>${esc(many ? camOf(ev) : ev.ts.slice(0, 10))}</b><span>${esc(what)}</span></div></button>`;
+    `<div class="inc-body"><b>${esc(many ? camOf(ev) + ' - ' + when : when)}</b>` +
+    `<span>${esc(whatOf(ev))}${m.seconds != null ? ' · ' + dur(m.seconds) : ''}</span></div></button>`;
 }
 
 let sinceList = [];
 async function loadSince() {
   const cam = many ? $('#chk-cam').value : CAMS[0];
   const r = await api(`/api/washroom/since?camera=${encodeURIComponent(cam)}`);
-  // An "out" whose "in" is listed already is the same person: show the "in".
-  const ins = new Set(r.visits.filter(v => v.kind === 'washroom_in').map(v => v.id));
-  sinceList = r.visits.filter(v => !(v.kind === 'washroom_out' && ins.has(v.meta.in_id)));
+  sinceList = r.visits;
   const from = r.clean ? `checked clean ${r.clean.ts.slice(0, 16).replace('T', ' ')}` : `${r.from.slice(0, 16).replace('T', ' ')} (no clean check before - last 24 h)`;
   const to = r.is_report ? `reported dirty or damaged ${r.to.slice(0, 16).replace('T', ' ')}` : 'now';
-  $('#since-title').textContent = r.is_report ? 'Used before it was found dirty or damaged' : 'Used since it was last checked clean';
-  $('#since-hint').textContent = `From ${from} to ${to}: ${plural(sinceList.filter(v => v.kind !== 'washroom_door').length, 'person')}` +
-    (sinceList.some(v => v.kind === 'washroom_door') ? ', plus door uses where nobody was seen.' : '.');
+  $('#since-title').textContent = r.is_report ? 'At the door before it was found dirty or damaged' : 'At the door since it was last checked clean';
+  const seen = sinceList.filter(v => !nobody(v)).length, blind = sinceList.length - seen;
+  $('#since-hint').textContent = `From ${from} to ${to}: ${seen} with a person` +
+    (blind ? `, ${blind} where the door moved but nobody could be seen.` : '.');
   $('#since').innerHTML = sinceList.length ? sinceList.map(visitCard).join('')
-    : '<p class="empty">Nobody since then.</p>';
+    : '<p class="empty">Nobody at the door since then.</p>';
   $$('#since .incident').forEach(b => b.onclick = () => {
     const ev = sinceList[+b.dataset.i];
     openPhotos(eventPhotos(ev, camOf(ev)), 0);
@@ -223,15 +233,15 @@ let dayRows = [];
 async function loadDay() {
   if (!day) return;
   const r = await api(`/api/washroom?day=${day.value}`);
-  const evs = r.events.slice().reverse();          // oldest first
-  const ins = new Set(evs.filter(e => e.kind === 'washroom_in').map(e => e.id));
-  dayRows = evs.filter(e => !(e.kind === 'washroom_out' && ins.has(e.meta.in_id)));
-  const people = dayRows.filter(e => e.kind === 'washroom_in' || e.kind === 'washroom_out').length;
-  $('#day-count').textContent = people ? plural(people, 'visit') : '';
+  dayRows = r.events;                              // newest first
+  const uses = dayRows.filter(e => e.kind !== 'washroom_check');
+  $('#day-count').textContent = uses.length ? `${uses.filter(e => !nobody(e)).length} with a person, ` +
+    `${uses.filter(nobody).length} door only` : '';
   $('#visits').innerHTML = dayRows.length ? dayRows.map((e, i) => {
     const m = e.meta || {};
     const th = photoOf(e);
-    const img = th ? `<img class="wash-th" src="${esc(th)}" alt="" data-i="${i}">` : '';
+    const shots = (m.photos || []).length;
+    const img = th ? `<img class="wash-th" src="${esc(th)}" alt="" data-i="${i}" title="${shots} photo(s) - click">` : '';
     const camCell = many ? `<td>${esc(camOf(e))}</td>` : '';
     if (e.kind === 'washroom_check') {
       const bad = e.label !== 'clean';
@@ -239,16 +249,9 @@ async function loadDay() {
         `<td colspan="2"><span class="tag ${bad ? 'red' : 'green'}">${bad ? 'found ' + esc(e.label) : 'checked clean'}</span></td>` +
         `<td>${esc(m.note || '')}</td></tr>`;
     }
-    if (e.kind === 'washroom_door') {
-      return `<tr class="muted-row"><td>${hm(m.at || e.ts)}</td><td>${img}</td>${camCell}` +
-        `<td colspan="2">door used, nobody seen</td><td></td></tr>`;
-    }
-    const inAt = e.kind === 'washroom_in' ? hm(m.at || e.ts) : '<span class="muted">not seen</span>';
-    const outAt = e.kind === 'washroom_out' ? hm(m.at || e.ts) : (m.out_at ? hm(m.out_at)
-      : (day.value === today() ? '<span class="tag green">inside now?</span>' : '<span class="muted">not seen</span>'));
-    return `<tr><td>${inAt}</td><td>${img}</td>${camCell}<td>${outAt}</td>` +
-      `<td class="num">${dur(m.seconds)}</td><td></td></tr>`;
-  }).join('') : '<tr><td colspan="6" class="empty">No visits on this day.</td></tr>';
+    return `<tr class="${nobody(e) ? 'muted-row' : ''}"><td>${hm(m.at || e.ts)}</td><td>${img}</td>${camCell}` +
+      `<td>${esc(whatOf(e))}</td><td class="num">${dur(m.seconds)}</td><td></td></tr>`;
+  }).join('') : '<tr><td colspan="6" class="empty">Nothing at the door on this day.</td></tr>';
   $$('#visits .wash-th').forEach(img => img.onclick = () => {
     const ev = dayRows[+img.dataset.i];
     openPhotos(eventPhotos(ev, camOf(ev)), 0);
@@ -270,13 +273,12 @@ window.onStatus = (s) => {
     const w = c.washroom || {};
     const n = $('.n', tile);
     n.hidden = c.state !== 'connected' || !w.zone;
-    n.className = 'pill n ' + (w.in_use ? 'busy' : 'ok');
-    n.textContent = w.in_use ? `in use since ${new Date(w.since * 1000).toTimeString().slice(0, 5)}`
-                  : w.door ? 'door moving' : 'free';
+    n.className = 'pill n ' + (w.in_use || w.door ? 'busy' : 'ok');
+    n.textContent = w.in_use ? 'somebody at the door' : w.door ? 'door moving' : 'quiet';
     $('.dot', tile).className = 'dot ' + c.state;
     $('.tx', tile).textContent = c.state !== 'connected'
       ? (c.state === 'off' ? 'no IP set' : c.state === 'connecting' ? 'connecting...' : 'offline')
-      : !w.zone ? 'draw the door zone' : w.in_use ? `${w.inside} inside` : 'watching the door';
+      : !w.zone ? 'draw the door zone' : 'watching the door';
     const img = $('img', tile);
     const key = c.state === 'connected' ? `${c.seq}-${c.ver}` : c.state;
     if (img.dataset.key !== key && Date.now() - (+img.dataset.at || 0) > 1000) {

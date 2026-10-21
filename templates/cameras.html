@@ -5,8 +5,9 @@
 <h1>Cameras</h1>
 <p class="sub">Every camera in one list. Type the IP and press <b>Save</b> - the
    app switches over straight away, no restart. <b>Purpose</b> decides what a
-   camera is for: <i>Counting</i> (people and phone use) or <i>Restricted</i>
-   (alert when anybody enters). The login and stream path are copied from a
+   camera is for: <i>Counting</i> (people and phone use), <i>Restricted</i>
+   (alert when anybody enters) or <i>Washroom door</i> (who goes into the
+   washroom - see the Washroom page). The login and stream path are copied from a
    camera that already works, so usually only the IP needs typing.</p>
 
 {% with add_label='Add camera' %}{% include "_scan.html" %}{% endwith %}
@@ -136,6 +137,22 @@ $('#add-r').onclick = async () => {
   await post('/api/cameras/add', {group: 'restricted'});
   location.reload();
 };
+$('#add-w').onclick = async () => {
+  $('#add-w').disabled = true;
+  const r = await post('/api/cameras/add', {group: 'washroom'});
+  // Land on the new row with the IP box ready to type in.
+  location.hash = 'new-' + ((r.camera && r.camera.id) || '');
+  location.reload();
+};
+if (location.hash.startsWith('#new-')) {
+  const row = $(`.cam-row[data-id="${CSS.escape(location.hash.slice(5))}"]`);
+  history.replaceState(null, '', location.pathname);
+  if (row) {
+    row.classList.add('fresh');
+    row.scrollIntoView({block: 'center'});
+    $('.ip', row).focus();
+  }
+}
 
 window.onStatus = (s) => {
   const cams = Object.values(s.cameras);

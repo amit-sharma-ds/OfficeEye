@@ -1,7 +1,9 @@
 """Web app: pages, the JSON API they talk to, and the video endpoints."""
 
+import json
 import logging
 import os
+import re
 import threading
 import time
 from datetime import datetime, timedelta
@@ -18,7 +20,7 @@ import photos
 import scan
 import washroom                     # noqa: F401 - adds its detection to the pipeline
 from cameras import manager
-from detection import pipeline
+from detection import phone_watch_state, pipeline
 
 if cloud.CLOUD:
     # The cloud copy has no cameras of its own: the pages read what the
@@ -298,6 +300,74 @@ def api_running_days_csv():
                     headers={"Content-Disposition": f'attachment; filename="{name}.csv"'})
 
 
+_HM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+
+
+def _phone_model():
+    """The office-trained phone model: in use, or what its last test said."""
+    folder = os.path.join(config.DATA_DIR, "phone")
+    out = {}
+    for name in ("model", "report"):
+        try:
+            with open(os.path.join(folder, name + ".json"), encoding="utf-8") as f:
+                out[name] = json.load(f)
+        except (OSError, ValueError):
+            pass
+    return out
+
+
+def _phone_rules_out():
+    rules, office = cloud.section("phone"), cloud.section("office")
+    return {"rules": rules, "office": {"open": office.get("open"), "close": office.get("close")},
+            "now": phone_watch_state(rules, office, datetime.now()), "model": _phone_model()}
+
+
+@app.get("/api/phone/rules")
+def api_phone_rules():
+    return jsonify(_phone_rules_out())
+
+
+@app.post("/api/phone/rules")
+def api_phone_rules_save():
+    body = request.get_json(silent=True) or {}
+    patch = {}
+    try:
+        if "min_seconds" in body:
+            patch["min_seconds"] = min(max(int(body["min_seconds"]), 0), 600)
+        if "photo_every" in body:
+            patch["photo_every"] = min(max(float(body["photo_every"]), 0), 120)
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "message": "Seconds and minutes must be numbers"})
+    for key in ("watch_from", "watch_to"):
+        if key in body:
+            v = str(body[key] or "").strip()
+            if v and not _HM.match(v):
+                return jsonify({"ok": False, "message": "Times look like 09:30"})
+            patch[key] = v
+    if "breaks" in body:
+        breaks = []
+        for b in body["breaks"] or []:
+            if not (isinstance(b, (list, tuple)) and len(b) == 2 and all(_HM.match(str(x)) for x in b)):
+                return jsonify({"ok": False, "message": "Each break needs a start and an end, like 13:00 - 14:00"})
+            breaks.append([str(b[0]), str(b[1])])
+        patch["breaks"] = breaks
+    if body.get("sensitivity") in ("low", "medium", "high"):
+        patch["sensitivity"] = body["sensitivity"]
+    config.update("phone", patch)
+    pipeline.reload()
+    return jsonify({"ok": True, "message": "Phone rules saved", **_phone_rules_out()})
+
+
+@app.get("/api/phone/uses")
+def api_phone_uses():
+    """Every phone use of a day: from when to when, with a photo when one
+    was taken. (Older records only have photos.)"""
+    rows = events.recent(1000, "phone_use", day=_day_arg(),
+                         camera=request.args.get("camera") or None)
+    uses = [r for r in rows if r["meta"].get("started") or r["meta"].get("photos")]
+    return jsonify({"uses": uses, "seconds": sum(r["meta"].get("seconds") or 0 for r in uses)})
+
+
 @app.get("/api/phone")
 def api_phone():
     limit = min(int(request.args.get("limit", 60)), 500)
@@ -306,7 +376,8 @@ def api_phone():
                                             with_photos=True)})
 
 
-WASH_KINDS = ["washroom_in", "washroom_out", "washroom_door", "washroom_check"]
+WASH_KINDS = ["washroom_visit", "washroom_in", "washroom_out", "washroom_door", "washroom_check"]
+WASH_USES = ["washroom_visit", "washroom_in", "washroom_out", "washroom_door"]
 PROBLEMS = ("dirty", "damaged")
 
 
@@ -340,8 +411,7 @@ def api_washroom_since():
     clean = events.between(["washroom_check"], "2000", report, camera, ("clean",), limit=1)
     start = clean[0]["ts"] if clean else \
         (datetime.fromisoformat(report) - timedelta(days=1)).isoformat(timespec="seconds")
-    visits = events.between(["washroom_in", "washroom_out", "washroom_door"], start, report + "~",
-                            camera, limit=300)
+    visits = events.between(WASH_USES, start, report + "~", camera, limit=300)
     return jsonify({"from": start, "clean": clean[0] if clean else None, "to": report,
                     "is_report": report != now, "visits": visits})
 

@@ -2,6 +2,7 @@
 <div class="actions">
   <button class="add" id="add"><span class="plus">+</span> {{ add_label }}</button>
   <button class="ghost" id="add-r"><span class="plus">+</span> Add restricted camera</button>
+  <button class="ghost" id="add-w"><span class="plus">+</span> Add washroom camera</button>
   <button class="ghost scan-btn" id="scan">Scan network</button>
 </div>
 
@@ -12,6 +13,7 @@
       <select id="scan-group">
         <option value="count">Counting</option>
         <option value="restricted">Restricted</option>
+        <option value="washroom">Washroom door</option>
       </select>
     </label>
     <button class="primary" id="scan-all" hidden>Add all new</button>

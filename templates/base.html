@@ -391,7 +391,7 @@
       $('#phone-badge').textContent = s.on_phone_total || '';
       const inUse = Object.values(s.cameras).filter(c => c.washroom && c.washroom.in_use).length;
       $('#wash-badge').hidden = !inUse;
-      $('#wash-badge').textContent = inUse ? 'in use' : '';
+      $('#wash-badge').textContent = inUse ? 'door' : '';
       document.title = n ? `(${n}) ALERT - ${pageTitle}` : pageTitle;
 
       const d = s.detection;

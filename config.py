@@ -44,6 +44,15 @@ DEFAULTS = {
     "photos": {
         "keep_days": 30,
     },
+    # Phone-use rules (Phone use page -> Rules & timing).
+    "phone": {
+        "min_seconds": 10,        # use must last this long to count - not a touch
+        "watch_from": "",         # "" = when the office opens
+        "watch_to": "",           # "" = when it closes
+        "breaks": [],             # [["13:00", "14:00"], ...] phones allowed, not recorded
+        "photo_every": 2,         # minutes between photos from one camera
+        "sensitivity": "medium",  # low / medium / high
+    },
     # Send what the office sees to the cloud view (cloud.py). The token is
     # the shared secret; the cloud host gets the same one as OFFICEEYE_PUSH_TOKEN.
     "cloud": {

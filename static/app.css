@@ -208,6 +208,20 @@ h2.sec { margin: 0; font-size: 16px; color: var(--ink-2); }
                 gap: 8px; padding: 0 10px 10px; color: #9ca3af; font-size: 12px; }
 .tile-actions button { background: #1f2937; color: #e5e7eb; border-color: #374151; }
 
+/* ---------------------------------------------------------- phone rules */
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 16px; }
+.tabs button { background: none; border: none; border-bottom: 2px solid transparent;
+               border-radius: 0; padding: 8px 14px; color: var(--mute); font-weight: 600; }
+.tabs button.on { color: var(--brand); border-bottom-color: var(--brand); }
+.rule { padding: 12px 0; border-top: 1px solid var(--line-2); }
+.rule:first-of-type { border-top: none; }
+.rule > label { display: block; font-weight: 600; margin-bottom: 6px; }
+.rule input[type=number] { width: 90px; }
+.rule .hint { margin: 6px 0 0; }
+.break-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.incident .when { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+.incident.amber.live { background: #fffbeb; }
+
 /* ---------------------------------------------------------- washroom */
 p.hint.privacy { margin-top: -12px; }
 button.ok-btn { background: #15803d; color: #fff; }
@@ -411,6 +425,7 @@ table.cams .state { color: var(--ink-2); font-size: 12.5px; max-width: 280px;
                     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 table.cams .acts { white-space: nowrap; text-align: right; padding-right: 16px; }
 table.cams tr.adv td { background: #fafafa; padding: 12px 16px; }
+table.cams tr.fresh td { background: #eef2ff; }
 
 .scan-card { margin-top: 2px; }
 .scan-line { margin: 0 0 10px; font-size: 13px; color: var(--ink-2); }

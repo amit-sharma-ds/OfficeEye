@@ -3,10 +3,59 @@
 
 {% block body %}
 <h1>Phone use</h1>
-<p class="sub">People using a phone on the counting cameras. A phone counts only
-   when it is raised - held up to read or to the ear - and seen twice in a row;
-   then one photo is taken, at most one per camera per minute.</p>
+<p class="sub">People using a phone on the counting cameras: holding it to read or type,
+   or at the ear, for a while - a hand resting on a phone, or a quick look, does not
+   count. The times and the length are set under <b>Rules &amp; timing</b>.</p>
 
+<div class="tabs" role="tablist">
+  <button class="on" data-tab="use" role="tab">Phone use</button>
+  <button data-tab="rules" role="tab">Rules &amp; timing</button>
+</div>
+
+<section data-pane="rules" hidden>
+  <div class="card">
+    <div class="card-head"><h2>When does it count?</h2><span class="hint-inline" id="r-now"></span></div>
+    <div class="rule">
+      <label for="r-min">Count it as phone use after</label>
+      <div><input type="number" id="r-min" min="0" max="600" step="5"> seconds of use</div>
+      <p class="hint">The phone has to be in somebody's hands - held up to read or type, or at
+         the ear - this long. A hand resting on a phone or a quick look stays below it.</p>
+    </div>
+    <div class="rule">
+      <label>Watch phone use from</label>
+      <div><input type="time" id="r-from"> to <input type="time" id="r-to"></div>
+      <p class="hint">Empty = office hours (<span id="r-office"></span>, from Settings).</p>
+    </div>
+    <div class="rule">
+      <label>Breaks - phone use allowed, not recorded</label>
+      <div id="r-breaks"></div>
+      <button class="ghost sm" id="r-add-break">+ Add a break</button>
+    </div>
+    <div class="rule">
+      <label for="r-photo">One photo per camera at most every</label>
+      <div><input type="number" id="r-photo" min="0" max="120" step="1"> minutes</div>
+      <p class="hint">Somebody on the phone for a long time is not photographed over and over.</p>
+    </div>
+    <div class="rule">
+      <label for="r-sens">How sensitive</label>
+      <div><select id="r-sens">
+        <option value="low">Low - only clear phones, fewer mistakes</option>
+        <option value="medium">Medium (recommended)</option>
+        <option value="high">High - finds more, may now and then take a remote or a wallet for a phone</option>
+      </select></div>
+    </div>
+    <div class="row end">
+      <span class="status" id="r-status"></span>
+      <button class="primary" id="r-save">Save rules</button>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-head"><h2>Phone model trained on this office</h2></div>
+    <p class="hint" id="r-model">-</p>
+  </div>
+</section>
+
+<section data-pane="use">
 <div class="stats three">
   <div class="stat">
     <div class="stat-k">On phone now</div>
@@ -14,9 +63,9 @@
     <div class="stat-sub" id="p-now-sub">&nbsp;</div>
   </div>
   <div class="stat">
-    <div class="stat-k">Photos today</div>
+    <div class="stat-k">Phone uses today</div>
     <div class="stat-n" id="p-today">-</div>
-    <div class="stat-sub">times somebody was caught</div>
+    <div class="stat-sub" id="p-today-sub">&nbsp;</div>
   </div>
   <div class="stat">
     <div class="stat-k">Cameras checking</div>
@@ -32,7 +81,7 @@
 
 <div class="card">
   <div class="card-head">
-    <h2>Photos</h2>
+    <h2>Phone uses - from when to when</h2>
     <select id="cam" class="date">
       <option value="">All cameras</option>
       {% for cam in cameras %}<option value="{{ cam.id }}">{{ cam.name }}</option>{% endfor %}
@@ -41,29 +90,107 @@
   </div>
   <div class="incidents" id="gallery"><p class="empty">Loading&hellip;</p></div>
 </div>
+</section>
 {% endblock %}
 
 {% block scripts %}
 <script>
+// ------------------------------------------------------------ tabs
+function showTab(name) {
+  $$('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === name));
+  $$('[data-pane]').forEach(p => p.hidden = p.dataset.pane !== name);
+  try { localStorage.setItem('pc-phone-tab', name); } catch (e) {}
+}
+$$('.tabs button').forEach(b => b.onclick = () => showTab(b.dataset.tab));
+try { if (localStorage.getItem('pc-phone-tab') === 'rules') showTab('rules'); } catch (e) {}
+
+// ------------------------------------------------------------ rules & timing
+function breakRow(a, b) {
+  const row = document.createElement('div');
+  row.className = 'break-row';
+  row.innerHTML = `<input type="time" value="${esc(a || '')}"> to <input type="time" value="${esc(b || '')}">` +
+                  ` <button class="ghost sm" title="Remove this break">Remove</button>`;
+  $('button', row).onclick = () => row.remove();
+  $('#r-breaks').appendChild(row);
+}
+function paintRules(r) {
+  const x = r.rules;
+  $('#r-min').value = x.min_seconds;
+  $('#r-from').value = x.watch_from || '';
+  $('#r-to').value = x.watch_to || '';
+  $('#r-photo').value = x.photo_every;
+  $('#r-sens').value = x.sensitivity || 'medium';
+  $('#r-office').textContent = `${r.office.open} to ${r.office.close}`;
+  $('#r-breaks').innerHTML = '';
+  (x.breaks || []).forEach(b => breakRow(b[0], b[1]));
+  $('#r-now').textContent = r.now.text;
+  const m = r.model || {}, rep = m.report, mod = m.model;
+  const pct = (x) => Math.round(x * 100) + '%';
+  $('#r-model').textContent = mod
+    ? `In use since ${mod.trained_at.replace('T', ' ').slice(0, 16)}, learnt from ${mod.people} people. ` +
+      `On moments it had not seen it found ${pct(mod.recall)} of the phone uses, and ${pct(mod.precision)} of its alarms were right.`
+    : rep ? `Trained ${rep.trained_at.replace('T', ' ').slice(0, 16)} but not put in use - it was not good enough yet` +
+      (rep.choice ? ` (found ${pct(rep.choice.recall)} of uses, ${pct(rep.choice.precision)} of alarms right).` : '.') +
+      ' More labelled people will help. Until then the standard detector is used.'
+    : 'Not trained yet. The standard detector is used, which finds few phones from ceiling cameras.';
+}
+$('#r-add-break').onclick = () => breakRow('13:00', '14:00');
+$('#r-save').onclick = async () => {
+  const breaks = $$('#r-breaks .break-row').map(row => $$('input', row).map(i => i.value))
+    .filter(b => b[0] || b[1]);
+  const r = await post('/api/phone/rules', {
+    min_seconds: $('#r-min').value, photo_every: $('#r-photo').value,
+    watch_from: $('#r-from').value, watch_to: $('#r-to').value,
+    breaks, sensitivity: $('#r-sens').value,
+  });
+  $('#r-status').textContent = r.message;
+  if (r.ok) paintRules(r);
+};
+api('/api/phone/rules').then(paintRules).catch(() => {});
+
+// ------------------------------------------------------------ phone use
 const day = $('#day'), cam = $('#cam');
 day.value = today();
 day.max = today();
 day.onchange = cam.onchange = () => load();
 let shown = [];
 
+const dur = (s) => s == null ? '' : s < 60 ? `${s} s`
+  : s < 3600 ? `${Math.floor(s / 60)} min ${String(s % 60).padStart(2, '0')} s`
+  : `${Math.floor(s / 3600)} h ${String(Math.floor(s % 3600 / 60)).padStart(2, '0')} min`;
+
+// From when to when: an open use is still going if it was seen in the last
+// minute; otherwise the app stopped before its end was seen.
+function span(e) {
+  const m = e.meta || {};
+  const from = clock(m.started || e.ts);
+  if (!m.started) return {text: from, live: false};          // older record: a moment
+  if (m.ended) return {text: `${from} - ${clock(m.ended)}`, live: false};
+  const seen = new Date(m.last_seen || m.started);
+  const live = Date.now() - seen.getTime() < 60000;
+  return {text: `${from} - ${live ? 'now' : clock(m.last_seen) + ' (last seen)'}`, live};
+}
+
 async function load() {
-  const q = `day=${day.value}&limit=300` + (cam.value ? `&camera=${encodeURIComponent(cam.value)}` : '');
-  const {events} = await api('/api/phone?' + q);
-  shown = events;
-  $('#gallery').innerHTML = events.length ? events.map((e, i) => {
+  const q = `day=${day.value}` + (cam.value ? `&camera=${encodeURIComponent(cam.value)}` : '');
+  const {uses, seconds} = await api('/api/phone/uses?' + q);
+  shown = uses;
+  if (!cam.value && day.value === today()) {
+    $('#p-today').textContent = uses.length;
+    $('#p-today-sub').textContent = !uses.length ? 'nobody yet'
+      : seconds ? `${dur(seconds)} on the phone in all` : 'how long: shown for new ones';
+  }
+  $('#gallery').innerHTML = uses.length ? uses.map((e, i) => {
     const name = names[e.camera] || e.camera;
-    return `<button class="incident amber" data-i="${i}">` +
-      `<img src="${esc(eventThumb(e))}" alt="">` +
-      `<div class="inc-body"><b>${esc(name)}</b><span>${clock(e.ts)}</span>` +
-      `<span>${plural(e.value, 'person')} on a phone</span></div></button>`;
+    const m = e.meta || {}, sp = span(e), th = eventThumb(e);
+    return `<button class="incident amber ${sp.live ? 'live' : ''}" data-i="${i}">` +
+      (th ? `<img src="${esc(th)}" alt="">` : '<span class="noimg">no photo</span>') +
+      `<div class="inc-body"><b>${esc(name)}</b><span class="when">${esc(sp.text)}</span>` +
+      `<span>${sp.live ? 'on the phone now · ' : ''}${m.started ? dur(m.seconds) : 'on a phone'}</span></div></button>`;
   }).join('') : '<p class="empty">No phone use on this day.</p>';
   $$('#gallery .incident').forEach(b => b.onclick = () => {
     const e = shown[+b.dataset.i];
+    if (!eventThumb(e)) return;                       // no photo for this one
     openPhotos(eventPhotos(e, names[e.camera] || e.camera), 0);
   });
 }
@@ -75,7 +202,6 @@ window.onStatus = (s) => {
   $('#p-now').textContent = s.detection.state === 'running' ? s.on_phone_total : '-';
   $('#p-now').classList.toggle('warn', s.on_phone_total > 0);
   $('#p-now-sub').textContent = on.length ? `on ${plural(on.length, 'camera')}` : ' ';
-  $('#p-today').textContent = s.phone_today;
   $('#p-cams').textContent = cams.filter(c => c.state === 'connected').length;
 
   $('#now').innerHTML = on.length ? on.map(c =>
@@ -83,10 +209,14 @@ window.onStatus = (s) => {
     : '<p class="empty">Nobody is on a phone.</p>';
   $$('#now button').forEach(b => b.onclick = () => openLive(b.dataset.id, names[b.dataset.id]));
 
-  if (day.value === today() && s.phone_today !== known) {
-    known = s.phone_today;
+  // A use starting or ending changes who is on the phone; running ones
+  // need their "now" kept fresh too.
+  if (day.value === today() && (s.on_phone_total !== known || Date.now() - loadedAt > 15000)) {
+    known = s.on_phone_total;
+    loadedAt = Date.now();
     load().catch(() => {});
   }
 };
+let loadedAt = 0;
 </script>
 {% endblock %}

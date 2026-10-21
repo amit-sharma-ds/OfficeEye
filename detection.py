@@ -35,6 +35,7 @@ Anything process() returns is written to the event log, and whatever
 overlay() draws shows up on the live view.
 """
 
+import json
 import logging
 import os
 import threading
@@ -150,16 +151,23 @@ class Vision:
                 cfg.get("device", "auto") in (("auto", "cuda") if self.half
                                               else ("auto", "cpu")))
 
+    # Phones seen from a ceiling score far below people, so they get their own
+    # cutoff (Phone use -> Rules & timing -> How sensitive). People keep theirs.
+    PHONE_CONF = {"low": 0.30, "medium": 0.15, "high": 0.10}
+
     def configure(self, cfg):
         """Settings that do not need the model reloaded."""
         self.imgsz = int(cfg.get("imgsz", 480))
         self.conf = float(cfg.get("confidence", 0.4))
         self.classes = [self.person, self.phone] if cfg.get("phone", True) \
             else [self.person]
+        sens = config.get("phone").get("sensitivity", "medium")
+        self.phone_conf = self.PHONE_CONF.get(sens, self.PHONE_CONF["medium"])
 
     def detect(self, frames):
         extra = {"half": True} if self.half else {}
-        results = self.model.predict(frames, imgsz=self.imgsz, conf=self.conf,
+        results = self.model.predict(frames, imgsz=self.imgsz,
+                                     conf=min(self.conf, self.phone_conf),
                                      classes=self.classes, device=self.device,
                                      verbose=False, **extra)
         out = []
@@ -171,7 +179,11 @@ class Vision:
                 clss = r.boxes.cls.cpu().numpy()
                 for (a, b, c, d), s, k in zip(xyxy, confs, clss):
                     box = (int(a), int(b), int(c), int(d), float(s))
-                    (seen.people if int(k) == self.person else seen.phones).append(box)
+                    if int(k) == self.person:
+                        if s >= self.conf:          # the people cutoff, as before
+                            seen.people.append(box)
+                    elif s >= self.phone_conf:
+                        seen.phones.append(box)
             out.append(seen)
         return out
 
@@ -251,99 +263,241 @@ class PeopleCount(Detector):
             self._state.pop(camera, None)
 
 
+def _iso(ts):
+    return datetime.fromtimestamp(ts).isoformat(timespec="seconds")
+
+
+def phone_watch_state(rules, office, now):
+    """Is phone use checked at this moment? Outside the watch hours and in a
+    break it is not recorded. Times are "HH:MM" strings, same day."""
+    hm = now.strftime("%H:%M")
+    start = rules.get("watch_from") or office.get("open") or "00:00"
+    end = rules.get("watch_to") or office.get("close") or "23:59"
+    if not start <= hm < end:
+        return {"state": "off", "text": "Not watching now - phone use is checked {} to {}".format(start, end)}
+    for a, b in rules.get("breaks") or []:
+        if a <= hm < b:
+            return {"state": "break", "text": "Break until {} - phone use is not recorded".format(b)}
+    return {"state": "on", "text": "Watching until {}".format(end)}
+
+
 @register
 class PhoneUse(Detector):
-    """Who is *using* a phone, not just near one. A phone only counts when it
-    is raised into the top half of a person - held up to read, or to the ear.
-    A phone down by the hand, or lying on a desk somebody touches, is ignored.
+    """Who is *using* a phone, not just near one.
 
-    It has to be seen twice in a row before it counts, and then one photo is
-    taken - at most one per camera per minute."""
+    A phone counts for a person when it lies well inside their outline - in
+    the hands in front of them, at the face or the ear - not at its edge,
+    where a phone lies on the desk next to them. Each person is followed from
+    check to check, and the phone has to be seen with them again and again
+    for the time set under Phone use -> Rules & timing: a hand resting on a
+    phone or a quick look stays below it. Seen from a ceiling the phone can
+    be anywhere on the body, so there is no "top half" rule.
+
+    Outside the watch hours and in breaks nothing is recorded. When somebody
+    starts counting, one photo is taken - at most one per camera every few
+    minutes, and only once per person per use."""
 
     key = "phone"
     title = "Phone use"
     groups = (config.COUNT,)
-    USING_ZONE = 0.50       # fraction of the person's height, from the top
-    CONFIRM = 2             # checks in a row before it counts
-    PHOTO_GAP = 60.0
-    MIN_LOG_GAP = 2.0
+    INSIDE = 0.10           # phone centre at least this far inside the person's box
+    MATCH_IOU = 0.3         # the same person as in the last check
+    GAP = 20.0              # not seen with the phone this long: that use is over
+    PENDING = 60.0          # look again soon while a use is building up, this long
+    MIN_HITS = 2
+
+    MODEL_INFO = os.path.join(BASE_DIR, "data", "phone", "model.json")
+    PAD = 0.15              # cut-out margin, as in tools/phone_data.py
 
     def __init__(self):
         super().__init__()
         self._state = {}
+        self._rules, self._rules_at = ({}, {}), 0.0
+        self._cls, self._cls_cut, self._cls_mtime, self._cls_at = None, 0.5, None, 0.0
 
     @staticmethod
     def _blank():
-        return {"people": [], "phones": [], "using": set(), "streak": 0,
-                "on_phone": 0, "logged": None, "logged_at": 0.0, "photo_at": 0.0}
+        return {"tracks": [], "phones": [], "using": [], "on_phone": 0, "photo_at": 0.0}
 
-    def _using_phone(self, people, phones):
-        """Indices into `people` of everybody using a phone."""
-        using = set()
-        for (fx1, fy1, fx2, fy2, _) in phones:
-            cx, cy = (fx1 + fx2) / 2.0, (fy1 + fy2) / 2.0
-            best, best_area = None, None
-            for i, (x1, y1, x2, y2, _) in enumerate(people):
-                if not (x1 <= cx <= x2 and y1 <= cy <= y2):
-                    continue                        # phone is not on this person
-                if cy > y1 + self.USING_ZONE * (y2 - y1):
-                    continue                        # phone is low: holding, not using
-                area = (x2 - x1) * (y2 - y1)
-                if best_area is None or area < best_area:
-                    best, best_area = i, area        # nearest (smallest) person wins
-            if best is not None:
-                using.add(best)
-        return using
+    def _classifier(self):
+        """The office-trained phone model (tools/train_phone.py), once it has
+        passed its test - looked for once a minute, so no restart is needed."""
+        if time.time() - self._cls_at < 60:
+            return self._cls
+        self._cls_at = time.time()
+        try:
+            mtime = os.path.getmtime(self.MODEL_INFO)
+        except OSError:
+            self._cls = None
+            return None
+        if mtime != self._cls_mtime:
+            try:
+                info = json.load(open(self.MODEL_INFO, encoding="utf-8"))
+                from ultralytics import YOLO
+                self._cls = YOLO(os.path.join(BASE_DIR, info["model"]), task="classify")
+                self._cls_cut, self._cls_mtime = float(info["cutoff"]), mtime
+                log.info("phone model in use: %s, cutoff %s", info["model"], info["cutoff"])
+            except Exception:                             # noqa: BLE001
+                log.exception("could not load the phone model")
+                self._cls, self._cls_mtime = None, mtime
+        return self._cls
+
+    def _looks(self, frame, people):
+        """{person index: phone probability} from the office-trained model."""
+        cls = self._classifier()
+        if cls is None or not people:
+            return {}
+        h, w = frame.shape[:2]
+        crops, idx = [], []
+        for i, (x1, y1, x2, y2, _) in enumerate(people):
+            if y2 - y1 < 60:
+                continue                            # too far away to judge
+            px, py = (x2 - x1) * self.PAD, (y2 - y1) * self.PAD
+            crop = frame[int(max(0, y1 - py)):int(min(h, y2 + py)), int(max(0, x1 - px)):int(min(w, x2 + px))]
+            if crop.size:
+                crops.append(crop)
+                idx.append(i)
+        if not crops:
+            return {}
+        out = {}
+        for i, r in zip(idx, cls.predict(crops, imgsz=224, verbose=False)):
+            names = {v: k for k, v in r.names.items()}
+            out[i] = float(r.probs.data[names["phone"]])
+        return out
+
+    def rules(self):
+        """(phone rules, office hours) - read again every few seconds."""
+        if time.time() - self._rules_at > 5:
+            self._rules, self._rules_at = (config.get("phone"), config.get("office")), time.time()
+        return self._rules
+
+    def _holder(self, phone, people):
+        """Index of the person holding this phone, or None."""
+        cx, cy = (phone[0] + phone[2]) / 2.0, (phone[1] + phone[3]) / 2.0
+        best, best_area = None, None
+        for i, (x1, y1, x2, y2, _) in enumerate(people):
+            mx, my = (x2 - x1) * self.INSIDE, (y2 - y1) * self.INSIDE
+            if not (x1 + mx <= cx <= x2 - mx and y1 + my <= cy <= y2 - my):
+                continue                            # outside, or at the edge: on the desk
+            area = (x2 - x1) * (y2 - y1)
+            if best_area is None or area < best_area:
+                best, best_area = i, area            # nearest (smallest) person wins
+        return best
 
     def process(self, camera, frame, ts, seen):
-        using = self._using_phone(seen.people, seen.phones)
-        produced = []
+        """Every use of a phone is its own record: written when it starts to
+        count (with a photo when the camera's photo gap allows), kept up to
+        date while it lasts, and given its end time when the phone is put
+        away, the person leaves, or a break / the end of watch hours comes."""
+        rules, office = self.rules()
+        watching = phone_watch_state(rules, office, datetime.fromtimestamp(ts))["state"] == "on"
+        min_s = float(rules.get("min_seconds", 10))
+        need = self.MIN_HITS if min_s > 0 else 1
+        holders = {}
+        if watching:
+            for ph in seen.phones:
+                i = self._holder(ph, seen.people)
+                if i is not None and (i not in holders or ph[4] > holders[i][4]):
+                    holders[i] = ph
+            # The office-trained model looks at each person as a whole (hands,
+            # head, phone) - it sees uses the phone detector cannot.
+            try:
+                for i, p in self._looks(frame, seen.people).items():
+                    if p >= self._cls_cut and i not in holders:
+                        x1, y1, x2, y2, _ = seen.people[i]
+                        holders[i] = (x1, y1, x2, y2, p)
+            except Exception:                             # noqa: BLE001
+                log.exception("phone model failed")
+        ends, keep = [], []
         with self._lock:
             st = self._state.setdefault(camera, self._blank())
-            st["people"], st["phones"] = list(seen.people), list(seen.phones)
-            st["streak"] = st["streak"] + 1 if using else 0
-            st["using"] = using if st["streak"] >= self.CONFIRM else set()
-            prev, n = st["on_phone"], len(st["using"])
-            st["on_phone"] = n
-            shoot = n > prev and ts - st["photo_at"] >= self.PHOTO_GAP
+            old, tracks = list(st["tracks"]), []
+            for i, person in enumerate(seen.people):
+                tr, best = None, self.MATCH_IOU
+                for t in old:
+                    iou = _iou(t["box"], person)
+                    if iou >= best:
+                        tr, best = t, iou
+                if tr is not None:
+                    old.remove(tr)
+                else:
+                    tr = {"first": None, "last": 0.0, "hits": 0, "phone": None,
+                          "event": None, "saved": 0.0}
+                tr["box"] = person
+                if i in holders:
+                    if tr["first"] is None or ts - tr["last"] > self.GAP:
+                        self._close(tr, ends)               # an earlier use is over
+                        tr.update(first=ts, hits=0)
+                    tr["last"], tr["phone"] = ts, holders[i]
+                    tr["hits"] += 1
+                elif tr["first"] is not None and ts - tr["last"] > self.GAP:
+                    self._close(tr, ends)
+                tracks.append(tr)
+            for t in old:                                    # people who left
+                self._close(t, ends)
+            if not watching:                                 # a break, or after hours
+                for t in tracks:
+                    self._close(t, ends)
+            st["tracks"] = tracks
+            using = [t for t in tracks if t["first"] is not None and ts - t["last"] <= self.GAP
+                     and t["hits"] >= need and t["last"] - t["first"] >= min_s]
+            st["using"] = [t["box"] for t in using]
+            st["phones"] = [t["phone"] for t in tracks if t["phone"] and ts - t["last"] <= self.GAP]
+            st["on_phone"] = len(using)
+            new = [t for t in using if t["event"] is None]
+            for t in new:
+                t["event"], t["saved"] = "writing", ts
+            shoot = bool(new) and ts - st["photo_at"] >= float(rules.get("photo_every", 2)) * 60
             if shoot:
                 st["photo_at"] = ts
-            log_it = (shoot or (st["logged"] != n and
-                                ts - st["logged_at"] >= self.MIN_LOG_GAP))
-            if log_it:
-                quiet = not n and st["logged"] in (None, 0)
-                st["logged"], st["logged_at"] = n, ts
-                if quiet:
-                    log_it = False                  # nothing to say about a steady zero
+            for t in using:
+                if t["event"] not in (None, "writing") and ts - t["saved"] >= 30:
+                    t["saved"] = ts
+                    keep.append((t["event"], t["first"], t["last"]))
+            starts = [(t, t["first"]) for t in new]
+            targets = [t["box"] for t in new]
+            others = [t["box"] for t in tracks if all(t is not u for u in new)]
+            phones_now = list(st["phones"])
 
+        shot = None
         if shoot:
-            targets = [p for i, p in enumerate(seen.people) if i in using]
-            others = [p for i, p in enumerate(seen.people) if i not in using]
-            shot = photos.save(camera, "phone", frame, targets,
-                               others + list(seen.phones), colour=AMBER,
-                               ts=datetime.fromtimestamp(ts))
-            produced.append({"kind": "phone_use", "value": n,
-                             "label": "{} using a phone".format(n),
-                             "meta": {"photos": [shot]}})
-        elif log_it:
-            produced.append({"kind": "phone_use", "value": n,
-                             "label": ("{} using a phone".format(n) if n
-                                       else "nobody on a phone")})
-        return produced or None
+            shot = photos.save(camera, "phone", frame, targets, others + phones_now,
+                               colour=AMBER, ts=datetime.fromtimestamp(ts))
+        for t, first in starts:
+            meta = {"started": _iso(first), "last_seen": _iso(ts), "seconds": int(ts - first)}
+            if shot:
+                meta["photos"] = [shot]
+            eid = self.emit(camera, "phone_use", 1, "using a phone", meta)
+            with self._lock:
+                if t["event"] == "writing":
+                    t["event"] = eid
+                else:                                         # it ended meanwhile
+                    ends.append((eid, first, t["last"] or ts))
+        for eid, first, last in keep:
+            events.update_meta(eid, {"last_seen": _iso(last), "seconds": int(last - first)})
+        for eid, first, last in ends:
+            events.update_meta(eid, {"ended": _iso(last), "last_seen": _iso(last),
+                                     "seconds": int(last - first)})
+        return None
+
+    @staticmethod
+    def _close(t, ends):
+        """A use is over: note its record for the end time, forget it."""
+        if t["event"] not in (None, "writing"):
+            ends.append((t["event"], t["first"], t["last"]))
+        t.update(first=None, hits=0, phone=None, event=None)
 
     def overlay(self, camera, frame):
         with self._lock:
             st = self._state.get(camera)
             if not st:
                 return frame
-            people, phones, using = list(st["people"]), list(st["phones"]), set(st["using"])
-        for x1, y1, x2, y2, _ in phones:                 # every phone, faint
+            phones, using = list(st["phones"]), list(st["using"])
+        for x1, y1, x2, y2, _ in phones:                 # phones in somebody's hands, faint
             cv2.rectangle(frame, (x1, y1), (x2, y2), AMBER, 1)
-        for i in using:
-            if i < len(people):
-                x1, y1, x2, y2, _ = people[i]
-                cv2.rectangle(frame, (x1, y1), (x2, y2), AMBER, 2)
-                _label(frame, "on phone", x1, y1, AMBER)
+        for x1, y1, x2, y2, _ in using:
+            cv2.rectangle(frame, (x1, y1), (x2, y2), AMBER, 2)
+            _label(frame, "on phone", x1, y1, AMBER)
         return frame
 
     def caption(self, camera):
@@ -351,9 +505,13 @@ class PhoneUse(Detector):
         return ("{} on phone".format(n), False) if n else None
 
     def busy(self, camera):
+        """A use is building up: look again soon so it is confirmed in time."""
+        now = time.time()
         with self._lock:
             st = self._state.get(camera)
-            return bool(st and 0 < st["streak"] < self.CONFIRM)   # confirm it soon
+            return bool(st and any(t["first"] is not None and t["hits"] < 50 and
+                                   now - t["first"] < self.PENDING and now - t["last"] < self.GAP
+                                   for t in st["tracks"]))
 
     def on_phone(self, camera):
         with self._lock:
