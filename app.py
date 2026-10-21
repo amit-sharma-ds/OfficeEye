@@ -16,6 +16,7 @@ from flask import (Flask, Response, abort, jsonify, redirect, render_template,
 import cloud
 import config
 import events
+import mongo
 import photos
 import scan
 import washroom                     # noqa: F401 - adds its detection to the pipeline
@@ -356,6 +357,12 @@ def api_phone_rules_save():
     config.update("phone", patch)
     pipeline.reload()
     return jsonify({"ok": True, "message": "Phone rules saved", **_phone_rules_out()})
+
+
+@app.get("/api/mongo")
+def api_mongo():
+    """How far the MongoDB copy of the records has got."""
+    return jsonify(mongo.sync.info())
 
 
 @app.get("/api/phone/uses")
@@ -770,6 +777,7 @@ def main():
     pipeline.start()
     threading.Thread(target=_uptime_watch, name="uptime", daemon=True).start()
     cloud.uplink.start(_status_payload, _render, manager.listing)
+    mongo.sync.start()
     log.info("open  http://localhost:%s", PORT)
     try:
         app.run(host="0.0.0.0", port=PORT, threaded=True,

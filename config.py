@@ -53,6 +53,13 @@ DEFAULTS = {
         "photo_every": 2,         # minutes between photos from one camera
         "sensitivity": "medium",  # low / medium / high
     },
+    # A copy of every record in MongoDB (mongo.py). The uri holds a password:
+    # it lives in data/config.json only, never in the repository.
+    "mongodb": {
+        "enabled": False,
+        "uri": "",
+        "db": "officeeye",
+    },
     # Send what the office sees to the cloud view (cloud.py). The token is
     # the shared secret; the cloud host gets the same one as OFFICEEYE_PUSH_TOKEN.
     "cloud": {
