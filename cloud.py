@@ -237,11 +237,11 @@ def _install_cloud(app):
         p = request.path
         if p.startswith("/api/cloud/push/") or p.startswith("/static/") or p in ("/login", "/healthz"):
             return None
+        if p == "/api/status" and not session.get("in"):
+            return jsonify({"login_required": True})          # health checks get a 200
         if not PASSWORD:
             return Response(NO_PASSWORD, 503, mimetype="text/html")
         if not session.get("in"):
-            if p == "/api/status":
-                return jsonify({"login_required": True})      # health checks get a 200
             if p.startswith(("/api/", "/frame/", "/snapshot/", "/live/", "/photos/")):
                 return jsonify({"ok": False, "message": "Log in first"}), 401
             return redirect("/login?next=" + quote(request.full_path.rstrip("?")))
