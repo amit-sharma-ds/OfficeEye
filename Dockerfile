@@ -3,9 +3,11 @@
 # that means the office cameras are NOT visible - see README, "Deploying".
 FROM python:3.12-slim
 
-# OpenCV needs these even without a screen.
-RUN apt-get update && apt-get install -y --no-install-recommends libgl1 libglib2.0-0 \
+# OpenCV needs libgl1/libglib even without a screen; tzdata for the clock.
+RUN apt-get update && apt-get install -y --no-install-recommends libgl1 libglib2.0-0 tzdata \
     && rm -rf /var/lib/apt/lists/*
+# Events and reports use local time: the office's, not the server's UTC.
+ENV TZ=Asia/Kolkata
 
 WORKDIR /app
 COPY requirements.txt .
