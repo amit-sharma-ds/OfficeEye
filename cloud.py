@@ -311,12 +311,15 @@ def _install_cloud(app):
             now = time.time()
             recent = [t for t in _failures.get(ip, []) if now - t < 600]
             typed = request.form.get("password", "")
+            user = request.form.get("username", "").strip().lower()
             if PASSWORD:
-                right = hmac.compare_digest(typed.encode(), PASSWORD.encode())
+                right = hmac.compare_digest(typed.encode(), PASSWORD.encode()) and \
+                    user == os.environ.get("OFFICEEYE_USER", "admin").lower()
             else:
                 with store.lock:
-                    salt, want = store.login
-                right = hmac.compare_digest(_pw_hash(salt, typed), want)
+                    salt, want, name = store.login
+                right = hmac.compare_digest(_pw_hash(salt, typed), want) and \
+                    hmac.compare_digest(user.encode(), name.lower().encode())
             if len(recent) >= 10:
                 error = "Too many wrong passwords. Try again in a few minutes."
             elif right:
@@ -347,9 +350,10 @@ def _install_cloud(app):
             store.cameras = body.get("cameras") or []
             store.settings = body.get("settings") or {}
             store.pushed_at = time.time()
-            if isinstance(login.get("salt"), str) and isinstance(login.get("hash"), str) \
-                    and len(login["hash"]) == 64 and (login["salt"], login["hash"]) != store.login:
-                store.login = (login["salt"], login["hash"])
+            new = (login.get("salt"), login.get("hash"), str(login.get("user") or "admin"))
+            if isinstance(new[0], str) and isinstance(new[1], str) and len(new[1]) == 64 \
+                    and new != store.login:
+                store.login = new
                 if not PASSWORD and not os.environ.get("OFFICEEYE_SECRET"):
                     app.secret_key = hashlib.sha256(
                         ("session:" + login["salt"] + login["hash"]).encode()).hexdigest()
@@ -454,6 +458,7 @@ class Uplink:
             kb, frames = round(sum(b for _, b in self.sent) / 1024), len(self.frames_sent)
         return {"enabled": bool(cfg.get("enabled")), "url": cfg.get("url", ""),
                 "token": cfg.get("token", ""), "password": cfg.get("password", ""),
+                "username": cfg.get("username") or "admin",
                 "state": self.state, "error": self.error,
                 "ok_ago": round(now - self.ok_at, 1) if self.ok_at else None,
                 "kb_per_min": kb, "frames_per_min": frames, "viewers": self.viewers}
@@ -496,7 +501,8 @@ class Uplink:
                 "settings": {k: config.get(k) for k in ("office", "detection", "photos")}}
         if cloud.get("salt") and cloud.get("hash"):
             # Only a salted hash of the login password leaves this PC.
-            body["login"] = {"salt": cloud["salt"], "hash": cloud["hash"]}
+            body["login"] = {"salt": cloud["salt"], "hash": cloud["hash"],
+                             "user": cloud.get("username") or "admin"}
         return body
 
     def _run(self):
@@ -632,6 +638,11 @@ def _install_office(app):
             patch["url"] = url
         if body.get("new_token") or not cfg.get("token"):
             patch["token"] = secrets.token_urlsafe(32)
+        if "username" in body:
+            name = str(body["username"] or "").strip()
+            if not re.match(r"^[A-Za-z0-9._@-]{3,40}$", name):
+                return jsonify({"ok": False, "message": "Username: 3 to 40 letters or digits"})
+            patch["username"] = name
         password = str(body.get("password") or "").strip()
         if password and len(password) < 6:
             return jsonify({"ok": False, "message": "The cloud password needs at least 6 characters"})

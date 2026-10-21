@@ -109,10 +109,12 @@
     <button class="primary" id="cl-save">Save</button>
   </div>
   <div class="row" style="margin-top:14px">
+    <div class="field"><label>Username for the cloud link</label>
+      <input id="cl-user" autocomplete="off"></div>
     <div class="field grow"><label>Password to open the cloud link</label>
       <input id="cl-pw" autocomplete="off"></div>
     <button class="ghost" id="cl-pw-copy">Copy</button>
-    <button class="ghost" id="cl-pw-save" title="Type a new one first - everybody has to log in again">Change password</button>
+    <button class="ghost" id="cl-pw-save" title="Type a new one first - everybody has to log in again">Save login</button>
   </div>
   <div class="row" style="margin-top:14px">
     <div class="field grow"><label>Push token (only needed if Render has OFFICEEYE_PUSH_TOKEN set)</label>
@@ -134,6 +136,7 @@ if ($('#cl-url')) {
     }
     $('#cl-token').value = u.token || '(press Save to make one)';
     if (fill || document.activeElement !== $('#cl-pw')) $('#cl-pw').value = u.password || '';
+    if (fill || document.activeElement !== $('#cl-user')) $('#cl-user').value = u.username || 'admin';
     $('#cl-status').textContent = !u.enabled ? 'Off - nothing leaves this PC.'
       : u.state === 'ok' ? `Sending - last success ${u.ok_ago} s ago, ${u.kb_per_min} KB and ` +
         `${u.frames_per_min} pictures in the last minute${u.viewers ? ', somebody is watching' : ''}.`
@@ -148,7 +151,7 @@ if ($('#cl-url')) {
     paintUplink(r.uplink, true);
   };
   $('#cl-save').onclick = () => saveUplink({});
-  $('#cl-pw-save').onclick = () => saveUplink({password: $('#cl-pw').value});
+  $('#cl-pw-save').onclick = () => saveUplink({password: $('#cl-pw').value, username: $('#cl-user').value});
   const copier = (btn, input) => $(btn).onclick = async () => {
     try { await navigator.clipboard.writeText($(input).value); }
     catch (e) { $(input).select(); document.execCommand('copy'); }
