@@ -1,0 +1,294 @@
+{% extends "base.html" %}
+{% block title %}Washroom{% endblock %}
+
+{% block body %}
+<h1>Washroom</h1>
+<p class="sub">Who went into the washroom and when, seen from the camera in the
+   corridor outside the door - with a photo of each person at the door. When it is
+   found dirty or damaged, mark it here and the people who used it since it was
+   last checked clean are listed.</p>
+<p class="hint privacy">The camera must only see the corridor and the outside of the
+   door - never inside the washroom. Tell the staff that the washroom door is watched.</p>
+
+{% if cameras %}
+<div class="wall big" id="wall">
+  {% for cam in cameras %}
+  <div class="tile" data-id="{{ cam.id }}">
+    <div class="shot" role="button" tabindex="0" aria-label="Watch {{ cam.name }} live">
+      <img alt="">
+      <span class="pill n" hidden></span>
+    </div>
+    <div class="meta">
+      <span class="nm">{{ cam.name }}</span>
+      <span class="st"><span class="dot off"></span><span class="tx">...</span></span>
+    </div>
+    <div class="tile-actions">
+      <span class="zone-state">{{ 'Door zone drawn' if cam.zone else 'Draw the door zone first' }}</span>
+      <button class="ghost sm zone-btn">Door zone</button>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+<div class="card">
+  <div class="card-head"><h2>Checked the washroom?</h2></div>
+  <div class="row">
+    {% if cameras|length > 1 %}
+    <div class="field"><label>Washroom</label>
+      <select id="chk-cam">
+        {% for cam in cameras %}<option value="{{ cam.id }}">{{ cam.name }}</option>{% endfor %}
+      </select></div>
+    {% endif %}
+    <div class="field grow"><label>Note (optional)</label>
+      <input id="chk-note" maxlength="300" placeholder="Tap broken, floor wet, tissue on the floor"></div>
+    <button class="ok-btn" data-status="clean">Checked - clean</button>
+    <button class="danger" data-status="dirty">Found dirty</button>
+    <button class="danger" data-status="damaged">Found damaged</button>
+  </div>
+  <p class="status" id="chk-status">&nbsp;</p>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <h2 id="since-title">Used since it was last checked clean</h2>
+  </div>
+  <p class="hint" id="since-hint"></p>
+  <div class="incidents" id="since"><p class="empty">Loading&hellip;</p></div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <h2>Visits</h2>
+    <span class="hint-inline" id="day-count"></span>
+    <input type="date" id="day" class="date">
+  </div>
+  <div class="table-wrap">
+    <table class="records wash">
+      <thead><tr><th>Went in</th><th></th>{% if cameras|length > 1 %}<th>Washroom</th>{% endif %}
+                 <th>Came out</th><th class="num">Inside for</th><th>Note</th></tr></thead>
+      <tbody id="visits"><tr><td colspan="6" class="empty">Loading&hellip;</td></tr></tbody>
+    </table>
+  </div>
+</div>
+{% else %}
+<div class="card">
+  <p class="empty">No washroom camera yet. On the <a href="/cameras">Cameras</a> page add
+     the camera in the corridor outside the washroom and set its <b>Purpose</b> to
+     <i>Washroom door</i>. Then come back here and draw the door zone.</p>
+</div>
+{% endif %}
+
+<!-- door zone editor -->
+<div class="modal" id="zone" hidden>
+  <div class="modal-box wide">
+    <div class="modal-head">
+      <b>Door zone - <span id="zone-name"></span></b>
+      <button class="x" data-close aria-label="Close">&times;</button>
+    </div>
+    <p class="hint">Click around the <b>door and the floor right in front of it</b> - where a
+       person stands to open it. Keep it tight: people walking past further away should
+       not step into it. Drag a corner to move it.</p>
+    <div class="zone-wrap">
+      <img id="zone-img" alt="">
+      <canvas id="zone-canvas"></canvas>
+    </div>
+    <div class="row end">
+      <span class="status" id="zone-status"></span>
+      <button class="ghost" id="zone-undo">Undo point</button>
+      <button class="ghost" id="zone-clear">Clear</button>
+      <button class="primary" id="zone-save">Save door zone</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const CAMS = {{ cameras|map(attribute='id')|list|tojson }};
+const ZONES = {{ cameras|map(attribute='zone')|list|tojson }};
+const many = CAMS.length > 1;
+const zones = {};
+CAMS.forEach((id, i) => zones[id] = ZONES[i] || []);
+const hm = (iso) => (iso || '').slice(11, 16);
+const dur = (s) => s == null ? '' : s < 60 ? `${s} s` : `${Math.floor(s / 60)} min ${String(s % 60).padStart(2, '0')} s`;
+
+$$('#wall .tile').forEach(t => {
+  const id = t.dataset.id, name = $('.nm', t).textContent;
+  $('.shot', t).onclick = () => openLive(id, name);
+  $('.shot', t).onkeydown = (e) => { if (e.key === 'Enter') openLive(id, name); };
+  $('.zone-btn', t).onclick = () => editZone(id, name);
+});
+
+// ------------------------------------------------------------ door zone editor
+let zId = null, pts = [], drag = -1;
+const cv = $('#zone-canvas'), zimg = $('#zone-img');
+function editZone(id, name) {
+  zId = id;
+  pts = (zones[id] || []).map(p => [p[0], p[1]]);
+  $('#zone-name').textContent = name;
+  $('#zone-status').textContent = '';
+  zimg.onload = () => { fit(); draw(); };
+  zimg.src = `/frame/${encodeURIComponent(id)}.jpg?w=960&overlay=0&t=${Date.now()}`;
+  openModal($('#zone'));
+}
+function fit() { cv.width = zimg.clientWidth; cv.height = zimg.clientHeight; }
+window.addEventListener('resize', () => { if (!$('#zone').hidden) { fit(); draw(); } });
+function draw() {
+  const g = cv.getContext('2d'), W = cv.width, H = cv.height;
+  g.clearRect(0, 0, W, H);
+  if (!pts.length) return;
+  g.beginPath();
+  pts.forEach(([x, y], i) => i ? g.lineTo(x * W, y * H) : g.moveTo(x * W, y * H));
+  if (pts.length > 2) { g.closePath(); g.fillStyle = 'rgba(37, 99, 235, .22)'; g.fill(); }
+  g.strokeStyle = '#2563eb'; g.lineWidth = 2; g.stroke();
+  pts.forEach(([x, y], i) => {
+    g.beginPath(); g.arc(x * W, y * H, i ? 5 : 7, 0, Math.PI * 2);
+    g.fillStyle = i ? '#fff' : '#2563eb'; g.fill(); g.strokeStyle = '#2563eb'; g.stroke();
+  });
+}
+function at(e) {
+  const r = cv.getBoundingClientRect();
+  return [Math.min(Math.max((e.clientX - r.left) / r.width, 0), 1),
+          Math.min(Math.max((e.clientY - r.top) / r.height, 0), 1)];
+}
+function near(p) {
+  const W = cv.width, H = cv.height;
+  return pts.findIndex(([x, y]) => Math.hypot((x - p[0]) * W, (y - p[1]) * H) < 10);
+}
+cv.onpointerdown = (e) => {
+  const p = at(e), i = near(p);
+  if (i >= 0) { drag = i; cv.setPointerCapture(e.pointerId); return; }
+  pts.push(p); draw();
+};
+cv.onpointermove = (e) => { if (drag >= 0) { pts[drag] = at(e); draw(); } };
+cv.onpointerup = () => { drag = -1; };
+$('#zone-undo').onclick = () => { pts.pop(); draw(); };
+$('#zone-clear').onclick = () => { pts = []; draw(); };
+$('#zone-save').onclick = async () => {
+  if (pts.length < 3) { $('#zone-status').textContent = 'Click at least 3 corners around the door'; return; }
+  const r = await post(`/api/cameras/${encodeURIComponent(zId)}/zone`, {zone: pts});
+  zones[zId] = r.zone;
+  const tile = $(`#wall .tile[data-id="${CSS.escape(zId)}"]`);
+  $('.zone-state', tile).textContent = r.zone.length ? 'Door zone drawn' : 'Draw the door zone first';
+  $('img', tile).dataset.key = '';
+  closeModal($('#zone'));
+};
+
+// ------------------------------------------------------------ checks
+$$('[data-status]').forEach(b => b.onclick = async () => {
+  const cam = many ? $('#chk-cam').value : CAMS[0];
+  const r = await post('/api/washroom/check', {camera: cam, status: b.dataset.status,
+                                               note: $('#chk-note').value});
+  $('#chk-status').textContent = r.message + (r.ok ? ' at ' + new Date().toTimeString().slice(0, 5) : '');
+  if (r.ok) { $('#chk-note').value = ''; loadSince(); loadDay(); }
+});
+
+// ------------------------------------------------------------ lists
+function photoOf(ev) { return eventThumb(ev); }
+function camOf(ev) { return names[ev.camera] || ev.camera; }
+function visitCard(ev, i) {
+  const m = ev.meta || {};
+  const th = photoOf(ev);
+  const what = ev.kind === 'washroom_in'
+    ? `went in ${hm(m.at || ev.ts)}` + (m.out_at ? ` · out ${hm(m.out_at)} · ${dur(m.seconds)}` : ' · not seen coming out')
+    : ev.kind === 'washroom_out' ? `came out ${hm(m.at || ev.ts)}` + (m.seconds != null ? ` · was inside ${dur(m.seconds)}` : ' · going in not seen')
+    : `door used ${hm(m.at || ev.ts)} · nobody seen`;
+  return `<button class="incident ${ev.kind === 'washroom_door' ? 'amber' : 'blue'}" data-i="${i}">` +
+    (th ? `<img src="${esc(th)}" alt="">` : '<span class="noimg">no photo</span>') +
+    `<div class="inc-body"><b>${esc(many ? camOf(ev) : ev.ts.slice(0, 10))}</b><span>${esc(what)}</span></div></button>`;
+}
+
+let sinceList = [];
+async function loadSince() {
+  const cam = many ? $('#chk-cam').value : CAMS[0];
+  const r = await api(`/api/washroom/since?camera=${encodeURIComponent(cam)}`);
+  // An "out" whose "in" is listed already is the same person: show the "in".
+  const ins = new Set(r.visits.filter(v => v.kind === 'washroom_in').map(v => v.id));
+  sinceList = r.visits.filter(v => !(v.kind === 'washroom_out' && ins.has(v.meta.in_id)));
+  const from = r.clean ? `checked clean ${r.clean.ts.slice(0, 16).replace('T', ' ')}` : `${r.from.slice(0, 16).replace('T', ' ')} (no clean check before - last 24 h)`;
+  const to = r.is_report ? `reported dirty or damaged ${r.to.slice(0, 16).replace('T', ' ')}` : 'now';
+  $('#since-title').textContent = r.is_report ? 'Used before it was found dirty or damaged' : 'Used since it was last checked clean';
+  $('#since-hint').textContent = `From ${from} to ${to}: ${plural(sinceList.filter(v => v.kind !== 'washroom_door').length, 'person')}` +
+    (sinceList.some(v => v.kind === 'washroom_door') ? ', plus door uses where nobody was seen.' : '.');
+  $('#since').innerHTML = sinceList.length ? sinceList.map(visitCard).join('')
+    : '<p class="empty">Nobody since then.</p>';
+  $$('#since .incident').forEach(b => b.onclick = () => {
+    const ev = sinceList[+b.dataset.i];
+    openPhotos(eventPhotos(ev, camOf(ev)), 0);
+  });
+}
+
+const day = $('#day');
+let dayRows = [];
+async function loadDay() {
+  if (!day) return;
+  const r = await api(`/api/washroom?day=${day.value}`);
+  const evs = r.events.slice().reverse();          // oldest first
+  const ins = new Set(evs.filter(e => e.kind === 'washroom_in').map(e => e.id));
+  dayRows = evs.filter(e => !(e.kind === 'washroom_out' && ins.has(e.meta.in_id)));
+  const people = dayRows.filter(e => e.kind === 'washroom_in' || e.kind === 'washroom_out').length;
+  $('#day-count').textContent = people ? plural(people, 'visit') : '';
+  $('#visits').innerHTML = dayRows.length ? dayRows.map((e, i) => {
+    const m = e.meta || {};
+    const th = photoOf(e);
+    const img = th ? `<img class="wash-th" src="${esc(th)}" alt="" data-i="${i}">` : '';
+    const camCell = many ? `<td>${esc(camOf(e))}</td>` : '';
+    if (e.kind === 'washroom_check') {
+      const bad = e.label !== 'clean';
+      return `<tr class="check ${bad ? 'bad' : ''}"><td>${hm(e.ts)}</td><td></td>${camCell}` +
+        `<td colspan="2"><span class="tag ${bad ? 'red' : 'green'}">${bad ? 'found ' + esc(e.label) : 'checked clean'}</span></td>` +
+        `<td>${esc(m.note || '')}</td></tr>`;
+    }
+    if (e.kind === 'washroom_door') {
+      return `<tr class="muted-row"><td>${hm(m.at || e.ts)}</td><td>${img}</td>${camCell}` +
+        `<td colspan="2">door used, nobody seen</td><td></td></tr>`;
+    }
+    const inAt = e.kind === 'washroom_in' ? hm(m.at || e.ts) : '<span class="muted">not seen</span>';
+    const outAt = e.kind === 'washroom_out' ? hm(m.at || e.ts) : (m.out_at ? hm(m.out_at)
+      : (day.value === today() ? '<span class="tag green">inside now?</span>' : '<span class="muted">not seen</span>'));
+    return `<tr><td>${inAt}</td><td>${img}</td>${camCell}<td>${outAt}</td>` +
+      `<td class="num">${dur(m.seconds)}</td><td></td></tr>`;
+  }).join('') : '<tr><td colspan="6" class="empty">No visits on this day.</td></tr>';
+  $$('#visits .wash-th').forEach(img => img.onclick = () => {
+    const ev = dayRows[+img.dataset.i];
+    openPhotos(eventPhotos(ev, camOf(ev)), 0);
+  });
+}
+if (day) {
+  day.value = today();
+  day.max = today();
+  day.onchange = () => loadDay();
+}
+if ($('#chk-cam')) $('#chk-cam').onchange = () => loadSince();
+
+// ------------------------------------------------------------ live state
+let listAt = 0;
+window.onStatus = (s) => {
+  $$('#wall .tile').forEach(tile => {
+    const c = s.cameras[tile.dataset.id];
+    if (!c) return;
+    const w = c.washroom || {};
+    const n = $('.n', tile);
+    n.hidden = c.state !== 'connected' || !w.zone;
+    n.className = 'pill n ' + (w.in_use ? 'busy' : 'ok');
+    n.textContent = w.in_use ? `in use since ${new Date(w.since * 1000).toTimeString().slice(0, 5)}`
+                  : w.door ? 'door moving' : 'free';
+    $('.dot', tile).className = 'dot ' + c.state;
+    $('.tx', tile).textContent = c.state !== 'connected'
+      ? (c.state === 'off' ? 'no IP set' : c.state === 'connecting' ? 'connecting...' : 'offline')
+      : !w.zone ? 'draw the door zone' : w.in_use ? `${w.inside} inside` : 'watching the door';
+    const img = $('img', tile);
+    const key = c.state === 'connected' ? `${c.seq}-${c.ver}` : c.state;
+    if (img.dataset.key !== key && Date.now() - (+img.dataset.at || 0) > 1000) {
+      img.dataset.key = key;
+      img.dataset.at = Date.now();
+      img.src = `/frame/${encodeURIComponent(tile.dataset.id)}.jpg?w=640&k=${encodeURIComponent(key)}`;
+    }
+  });
+  if (Date.now() - listAt > 10000) {
+    listAt = Date.now();
+    if (CAMS.length) { loadSince().catch(() => {}); loadDay().catch(() => {}); }
+  }
+};
+</script>
+{% endblock %}

@@ -314,6 +314,24 @@ def camera_days(first, last, camera=None):
     return [dict(r) for r in rows]
 
 
+def between(kinds, start, end, camera=None, label_in=None, limit=2000):
+    """Rows of these kinds with start <= ts < end (ISO times), newest first."""
+    sql = "SELECT * FROM events WHERE ts >= ? AND ts < ? AND kind IN ({})".format(
+        ",".join("?" * len(kinds)))
+    args = [start, end, *kinds]
+    if camera:
+        sql += " AND camera = ?"
+        args.append(camera)
+    if label_in:
+        sql += " AND label IN ({})".format(",".join("?" * len(label_in)))
+        args += list(label_in)
+    sql += " ORDER BY ts DESC, id DESC LIMIT ?"
+    args.append(int(limit))
+    with _lock:
+        rows = _get().execute(sql, args).fetchall()
+    return [_row(r) for r in rows]
+
+
 # ---------------------------------------------------------------- copying to the cloud view
 # The office app sends its rows to the cloud copy (cloud.py), which stores
 # them under the same ids, so every page there reads them as usual.

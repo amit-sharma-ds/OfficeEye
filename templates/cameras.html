@@ -27,6 +27,7 @@
           <select class="group" aria-label="Purpose">
             <option value="count" {{ 'selected' if cam.group == 'count' }}>Counting</option>
             <option value="restricted" {{ 'selected' if cam.group == 'restricted' }}>Restricted</option>
+            <option value="washroom" {{ 'selected' if cam.group == 'washroom' }}>Washroom door</option>
           </select>
         </td>
         <td class="state"><span class="dot off"></span><span class="text">checking...</span></td>
@@ -140,9 +141,10 @@ window.onStatus = (s) => {
   const cams = Object.values(s.cameras);
   const online = cams.filter(c => c.state === 'connected').length;
   const r = cams.filter(c => c.group === 'restricted').length;
+  const w = cams.filter(c => c.group === 'washroom').length;
   $('#summary').textContent = cams.length
     ? `${plural(cams.length, 'camera')} · ${online} online · ` +
-      `${cams.length - r} counting · ${r} restricted` : '';
+      `${cams.length - r - w} counting · ${r} restricted` + (w ? ` · ${w} washroom` : '') : '';
   $$('.cam-row').forEach(row => paint(row, s.cameras[row.dataset.id]));
 };
 </script>

@@ -14,7 +14,8 @@ CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
 # restricted cameras watch an area nobody should be in and raise alerts.
 COUNT = "count"
 RESTRICTED = "restricted"
-GROUPS = (COUNT, RESTRICTED)
+WASHROOM = "washroom"     # outside a washroom door: who went in and out (washroom.py)
+GROUPS = (COUNT, RESTRICTED, WASHROOM)
 
 DEFAULTS = {
     # As many cameras as the office needs. Each one is

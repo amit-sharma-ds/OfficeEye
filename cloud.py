@@ -475,7 +475,7 @@ class Uplink:
                     rows = list(new)
                     if now - last_refresh >= 30:
                         last_refresh = now
-                        rows += events.rows_of_day(["restricted_alert", "phone_use"],
+                        rows += events.rows_of_day(["restricted_alert", "phone_use", "washroom_in"],
                                                    datetime.now().strftime("%Y-%m-%d"))
                     if rows:
                         r = self._json(http, cfg, "/api/cloud/push/events", {"rows": rows})

@@ -208,6 +208,21 @@ h2.sec { margin: 0; font-size: 16px; color: var(--ink-2); }
                 gap: 8px; padding: 0 10px 10px; color: #9ca3af; font-size: 12px; }
 .tile-actions button { background: #1f2937; color: #e5e7eb; border-color: #374151; }
 
+/* ---------------------------------------------------------- washroom */
+p.hint.privacy { margin-top: -12px; }
+button.ok-btn { background: #15803d; color: #fff; }
+button.ok-btn:hover { background: #166534; }
+.incident.blue { border-left-color: var(--brand); }
+.pill.ok { background: rgba(22, 163, 74, .92); }
+.pill.busy { background: rgba(37, 99, 235, .92); }
+.table-wrap { overflow-x: auto; }
+table.wash td { vertical-align: middle; }
+table.wash .wash-th { width: 40px; height: 50px; object-fit: cover; border-radius: 5px;
+                      cursor: pointer; display: block; background: #e5e7eb; }
+table.wash tr.check td { background: #f0fdf4; }
+table.wash tr.check.bad td { background: var(--red-bg); }
+table.wash tr.muted-row td, .muted { color: var(--faint); }
+
 /* ---------------------------------------------------------- cloud view */
 .cloud-bar { background: #eef2ff; border: 1px solid #c7d2fe; color: #3730a3;
              border-radius: 8px; padding: 8px 14px; margin-bottom: 16px;

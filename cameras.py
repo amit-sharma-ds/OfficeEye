@@ -33,7 +33,8 @@ class Manager:
                 if cam_id not in saved:
                     gone.append(self.streams.pop(cam_id))
             for cam_id, cam in saved.items():
-                full = cam.get("group", config.COUNT) == config.RESTRICTED
+                # Washroom cameras too: a door opens and shuts in a second or two.
+                full = cam.get("group", config.COUNT) in (config.RESTRICTED, config.WASHROOM)
                 stream = self.streams.get(cam_id)
                 if stream is None:
                     stream = camera.CameraStream(cam_id, cam.get("url", ""),
@@ -103,7 +104,7 @@ class Manager:
             group = config.COUNT
         cams = config.cameras()
         same = [c for c in cams if c.get("group", config.COUNT) == group]
-        label = "Area" if group == config.RESTRICTED else "Camera"
+        label = {config.RESTRICTED: "Area", config.WASHROOM: "Washroom"}.get(group, "Camera")
         cam = {
             "id": config.next_camera_id(),
             "name": "{} {}".format(label, len(same) + 1),
@@ -124,7 +125,7 @@ class Manager:
             group = config.COUNT
         cams = config.cameras()
         taken = {rtsp.host_of(c.get("url", "")) for c in cams}
-        label = "Area" if group == config.RESTRICTED else "Camera"
+        label = {config.RESTRICTED: "Area", config.WASHROOM: "Washroom"}.get(group, "Camera")
         added = []
         for found in scan.scanner.public()["found"]:
             ip = found["ip"]
@@ -165,7 +166,7 @@ class Manager:
                         {})
         cams = config.cameras()
         same = [c for c in cams if c.get("group", config.COUNT) == group]
-        label = "Area" if group == config.RESTRICTED else "Camera"
+        label = {config.RESTRICTED: "Area", config.WASHROOM: "Washroom"}.get(group, "Camera")
         cam = {
             "id": config.next_camera_id(),
             "name": "{} {}".format(label, len(same) + 1),

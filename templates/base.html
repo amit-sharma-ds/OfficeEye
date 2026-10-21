@@ -15,6 +15,8 @@
       <a href="/live"       class="{{ 'on' if page == 'live' }}">Live cameras</a>
       <a href="/restricted" class="{{ 'on' if page == 'restricted' }}">Restricted area
         <span class="badge" id="alert-badge" hidden></span></a>
+      <a href="/washroom"   class="{{ 'on' if page == 'washroom' }}">Washroom
+        <span class="badge amber" id="wash-badge" hidden></span></a>
       <a href="/phone"      class="{{ 'on' if page == 'phone' }}">Phone use
         <span class="badge amber" id="phone-badge" hidden></span></a>
       <a href="/cameras"    class="{{ 'on' if page == 'cameras' }}">Cameras</a>
@@ -387,6 +389,9 @@
       $('#alert-badge').textContent = n || '';
       $('#phone-badge').hidden = !s.on_phone_total;
       $('#phone-badge').textContent = s.on_phone_total || '';
+      const inUse = Object.values(s.cameras).filter(c => c.washroom && c.washroom.in_use).length;
+      $('#wash-badge').hidden = !inUse;
+      $('#wash-badge').textContent = inUse ? 'in use' : '';
       document.title = n ? `(${n}) ALERT - ${pageTitle}` : pageTitle;
 
       const d = s.detection;

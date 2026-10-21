@@ -642,6 +642,10 @@ class Pipeline:
         """watched(camera) -> True while somebody has its live video open."""
         self._watched = watched
 
+    def add(self, detector):
+        """A detection from another module (washroom.py), added after start-up."""
+        self._detectors.append(detector)
+
     def start(self):
         if self._thread and self._thread.is_alive():
             return
@@ -670,6 +674,15 @@ class Pipeline:
         a queue from a minute ago."""
         with self._lock:
             self._inbox[camera] = (frame, ts, seq)
+        if self._group_map().get(camera) == config.WASHROOM:
+            # The door watch looks at every frame (cheap, no model) - a door
+            # opens and shuts between two model checks.
+            wash = self._det("washroom")
+            if wash is not None:
+                try:
+                    wash.on_frame(camera, frame, ts)
+                except Exception:                         # noqa: BLE001
+                    log.exception("washroom door watch failed")
         self._wake.set()
 
     def forget(self, camera):
@@ -770,6 +783,7 @@ class Pipeline:
         refresh = max(5.0, float(cfg.get("count_refresh", 30)))
         with self._lock:
             inbox = list(self._inbox.items())
+        wash = self._det("washroom")
 
         due = []
         for cam, (frame, fts, seq) in inbox:
@@ -782,6 +796,14 @@ class Pipeline:
             if seq == tr.seq or now - fts > self.STALE:
                 continue
             age = now - tr.ts if tr.ts else 1e9
+            if group == config.WASHROOM:
+                # Its door watch says how often: twice a second while the door
+                # is in use, about once a second while somebody walks near it,
+                # else once a minute - a busy corridor elsewhere costs nothing.
+                gap, rank = wash.schedule(cam) if wash else (60.0, 3)
+                if age >= gap:
+                    due.append((rank, -age, cam, frame, fts, seq, group, None))
+                continue
             restricted = group == config.RESTRICTED
             watched = self._watched(cam)
             if restricted:
@@ -915,6 +937,7 @@ class Pipeline:
         refresh = float(self._cfg.get("count_refresh", 30))
         phone = self._det("phone")
         area = self._det("restricted")
+        wash = self._det("washroom")
         out = {}
         with self._lock:
             tracks = {cam: (tr.ts, tr.seen, tr.ver) for cam, tr in self._tracks.items()}
@@ -930,6 +953,12 @@ class Pipeline:
             if group == config.COUNT:
                 item["count"] = len(seen.people) if fresh else None
                 item["on_phone"] = phone.on_phone(cam) if (fresh and phone) else None
+            elif group == config.WASHROOM:
+                # Checked only when the door is in use, so "fresh" is about
+                # the camera's frames, not the last model check.
+                info = wash.info(cam) if wash else {}
+                item["fresh"] = running and now - inbox.get(cam, 0) < 15
+                item["washroom"] = dict(info, watching=item["fresh"])
             else:
                 a = area.alert(cam) if area else {}
                 item["alert"] = {"active": bool(fresh and a.get("active")),

@@ -101,6 +101,16 @@ person. Click an alert to flick through them.
 - Somebody coming back within 15 seconds continues the same alert; it ends
   once the zone has looked empty for 5 seconds.
 
+**Washroom** - who went into the washroom and when, from a camera in the
+corridor outside the door (it must never see inside). Set that camera's
+Purpose to *Washroom door*, then draw the **door zone** here: the door and the
+floor right in front of it. A cheap check on every frame notices the door
+moving; the model then looks twice a second. Somebody walking up just before
+the door moved *went in*; the door opening with nobody outside means somebody
+*came out* - paired with the in, which gives the time inside. Each keeps a
+photo of the person at the door. Mark **Checked - clean** / **Found dirty** /
+**Found damaged** and the page lists who used it in between.
+
 **Phone use** - who is on a phone right now and a photo of every time
 somebody was caught, by day and camera. A phone only counts when it is
 raised (held up to read or to the ear) and seen twice in a row; at most one
@@ -196,6 +206,7 @@ draws appears on the live video.
 | `yolo26s.pt` | the detection model, downloaded on first start (choose another under Settings) |
 | `yolo26n.pt`, `yolo26n-objv1-150.pt`, `yolo11n.pt`, `yolo11s.pt` | faster / older models to fall back to, if downloaded |
 | `tools/` | training helpers: collect frames, pre-label, review labels |
+| `washroom.py` | washroom visits: the door watch and who went in / came out |
 | `cloud.py` | the cloud view: login and read-only copy on Render, and the office uplink |
 | `Dockerfile`, `render.yaml` | container and Render deploy (see Deploying) |
 | `data/` | config, `events.db` and `photos/` - back this up, do not commit it |
