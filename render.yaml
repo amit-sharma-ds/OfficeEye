@@ -1,8 +1,16 @@
 # Render Blueprint: New + -> Blueprint -> pick this repo.
+# This is the cloud view: it shows what the office PC sends (cloud.py).
 services:
   - type: web
     name: officeeye
     runtime: docker
     plan: free
-    healthCheckPath: /api/status
+    healthCheckPath: /healthz
     autoDeploy: true
+    envVars:
+      - key: OFFICEEYE_MODE
+        value: cloud
+      - key: OFFICEEYE_PASSWORD      # the password to log in - you choose it
+        sync: false
+      - key: OFFICEEYE_PUSH_TOKEN    # office PC: Settings -> Cloud view -> Copy
+        sync: false

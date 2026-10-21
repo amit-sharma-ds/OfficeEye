@@ -26,10 +26,14 @@
       <button class="sound" id="sound" type="button"></button>
       <div class="engine" id="engine">Detection: starting&hellip;</div>
       <div id="clock"></div>
+      {% if cloud_mode %}<a class="logout" href="/logout">Log out</a>{% endif %}
     </div>
   </aside>
 
-  <div class="content">{% block body %}{% endblock %}</div>
+  <div class="content">
+    {% if cloud_mode %}<div class="cloud-bar" id="cloud-bar">Cloud view &middot; read only</div>{% endif %}
+    {% block body %}{% endblock %}
+  </div>
 
   <!-- live video of one camera -->
   <div class="modal" id="live" hidden>
@@ -37,7 +41,7 @@
       <div class="modal-head">
         <b id="live-name"></b>
         <span class="modal-sub" id="live-info"></span>
-        <button class="ghost sm" id="live-ignore" title="Mark posters, TVs and the like that are mistaken for people">Ignore areas</button>
+        <button class="ghost sm" id="live-ignore" title="Mark posters, TVs and the like that are mistaken for people" {{ 'hidden' if cloud_mode }}>Ignore areas</button>
         <button class="x" data-close aria-label="Close">&times;</button>
       </div>
       <img id="live-img" class="live-img" alt="">
@@ -85,13 +89,23 @@
   <script>
     const $ = (sel, root) => (root || document).querySelector(sel);
     const $$ = (sel, root) => [...(root || document).querySelectorAll(sel)];
-    const api = async (url) => (await fetch(url)).json();
+    const api = async (url) => {
+      const res = await fetch(url);
+      if (res.status === 401) { location.href = '/login'; throw new Error('log in'); }
+      return res.json();
+    };
     const post = async (url, body) => {
       const res = await fetch(url, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify(body || {}),
       });
+      if (res.status === 401 || res.status === 403) {
+        // The cloud view is read only: say so instead of failing quietly.
+        const r = await res.json().catch(() => ({}));
+        toast({title: 'Read only', body: r.message || 'Change this on the office PC.', kind: 'info'});
+        throw new Error('read only');
+      }
       return res.json();
     };
     const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c =>
@@ -343,12 +357,27 @@
       beep(3);
     }
 
+    // Cloud view: how fresh is what the office PC sent?
+    function paintCloud(c) {
+      const bar = $('#cloud-bar');
+      if (!bar) return;
+      const ago = c.office_seen_ago;
+      const away = ago == null || ago > 90;
+      bar.classList.toggle('away', away);
+      bar.textContent = ago == null
+        ? 'Cloud view - the office PC has not sent anything yet. Turn it on under Settings -> Cloud view on the office PC.'
+        : away ? `Cloud view - the office PC stopped sending at ${clock(c.office_seen_at).slice(0, 5)}. Records up to then are shown; nothing is live.`
+        : `Cloud view - read only. Office PC sent data ${ago < 5 ? 'just now' : ago + ' s ago'}.`;
+    }
+
     async function poll() {
       let s;
       try { s = await api('/api/status'); } catch (e) {
         $('#engine').textContent = 'Server not reachable';
         return;
       }
+      if (s.login_required) { location.href = '/login'; return; }
+      if (s.cloud) paintCloud(s.cloud);
       lastStatus = s;
       names = {};
       Object.values(s.cameras).forEach(c => names[c.id] = c.name);

@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Log in - OfficeEye</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+<body class="login-page">
+  <form class="login-box" method="post" action="/login">
+    <div class="login-brand">OfficeEye<small>office camera monitor</small></div>
+    <input type="hidden" name="next" value="{{ next }}">
+    <label for="pw">Password</label>
+    <input id="pw" type="password" name="password" autocomplete="current-password" autofocus required>
+    {% if error %}<p class="login-error">{{ error }}</p>{% endif %}
+    <button class="primary" type="submit">Log in</button>
+    <p class="hint">Cloud view of the office cameras. Read only - settings are
+       changed on the office PC.</p>
+  </form>
+</body>
+</html>

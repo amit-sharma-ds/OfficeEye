@@ -92,10 +92,67 @@
   </div>
   <p class="status" id="office-status"></p>
 </div>
+
+{% if not cloud_mode %}
+<div class="card">
+  <h2>Cloud view</h2>
+  <p class="hint">Sends what this PC sees to the cloud copy of OfficeEye (Render), so
+     the pages open from home or a phone, behind a password. Live pictures are sent
+     only while somebody watches them there; camera links and passwords never leave
+     this PC. On Render, give the service <code>OFFICEEYE_PUSH_TOKEN</code> = the
+     token below, and <code>OFFICEEYE_PASSWORD</code> = the password to log in.</p>
+  <div class="row">
+    <div class="field grow"><label>Cloud link</label>
+      <input id="cl-url" placeholder="https://officeeye.onrender.com"></div>
+    <div class="field"><label>Send to the cloud</label>
+      <select id="cl-on"><option value="1">On</option><option value="0">Off</option></select></div>
+    <button class="primary" id="cl-save">Save</button>
+  </div>
+  <div class="row" style="margin-top:14px">
+    <div class="field grow"><label>Push token (copy it into Render)</label>
+      <input id="cl-token" readonly></div>
+    <button class="ghost" id="cl-copy">Copy</button>
+    <button class="ghost" id="cl-new" title="The old token stops working">New token</button>
+  </div>
+  <p class="status" id="cl-status">&nbsp;</p>
+</div>
+{% endif %}
 {% endblock %}
 
 {% block scripts %}
 <script>
+if ($('#cl-url')) {
+  const paintUplink = (u, fill) => {
+    if (fill) {
+      $('#cl-url').value = u.url;
+      $('#cl-on').value = u.enabled ? '1' : '0';
+    }
+    $('#cl-token').value = u.token || '(press Save to make one)';
+    $('#cl-status').textContent = !u.enabled ? 'Off - nothing leaves this PC.'
+      : u.state === 'ok' ? `Sending - last success ${u.ok_ago} s ago, ${u.kb_per_min} KB and ` +
+        `${u.frames_per_min} pictures in the last minute${u.viewers ? ', somebody is watching' : ''}.`
+      : u.state === 'error' ? 'Not reaching the cloud: ' + u.error
+      : 'Starting...';
+  };
+  const loadUplink = (fill) => api('/api/cloud/uplink').then(u => paintUplink(u, fill));
+  const saveUplink = async (extra) => {
+    const r = await post('/api/cloud/settings', {url: $('#cl-url').value,
+      enabled: $('#cl-on').value === '1', ...extra});
+    if (!r.ok) { $('#cl-status').textContent = r.message; return; }
+    paintUplink(r.uplink, true);
+  };
+  $('#cl-save').onclick = () => saveUplink({});
+  $('#cl-new').onclick = () => saveUplink({new_token: true});
+  $('#cl-copy').onclick = async () => {
+    try { await navigator.clipboard.writeText($('#cl-token').value); }
+    catch (e) { $('#cl-token').select(); document.execCommand('copy'); }
+    $('#cl-copy').textContent = 'Copied';
+    setTimeout(() => { $('#cl-copy').textContent = 'Copy'; }, 1500);
+  };
+  loadUplink(true);
+  setInterval(() => loadUplink(false), 5000);
+}
+
 $('#office-save').onclick = async () => {
   const r = await post('/api/office', {
     open: $('#office-open').value,

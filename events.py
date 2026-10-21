@@ -314,6 +314,81 @@ def camera_days(first, last, camera=None):
     return [dict(r) for r in rows]
 
 
+# ---------------------------------------------------------------- copying to the cloud view
+# The office app sends its rows to the cloud copy (cloud.py), which stores
+# them under the same ids, so every page there reads them as usual.
+
+def max_id():
+    with _lock:
+        return _get().execute("SELECT MAX(id) AS id FROM events").fetchone()["id"] or 0
+
+
+def first_id_since(day):
+    with _lock:
+        row = _get().execute("SELECT MIN(id) AS id FROM events WHERE day >= ?",
+                             (day,)).fetchone()
+    return row["id"]
+
+
+def rows_after(after_id, limit=1000):
+    with _lock:
+        rows = _get().execute("SELECT * FROM events WHERE id > ? ORDER BY id LIMIT ?",
+                              (after_id, limit)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def rows_of_day(kinds, day):
+    """Today's alerts and phone rows: they gain photos after they are first
+    written, so they are sent again now and then."""
+    with _lock:
+        rows = _get().execute(
+            "SELECT * FROM events WHERE day = ? AND kind IN ({})".format(",".join("?" * len(kinds))),
+            [day, *kinds]).fetchall()
+    return [dict(r) for r in rows]
+
+
+def store_rows(rows):
+    """Write rows exactly as given, ids included (the cloud side)."""
+    if not rows:
+        return
+    with _lock:
+        conn = _get()
+        conn.executemany(
+            "INSERT OR REPLACE INTO events (id, ts, day, camera, kind, label, value, meta)"
+            " VALUES (:id, :ts, :day, :camera, :kind, :label, :value, :meta)", rows)
+        conn.commit()
+    _peak_cache.clear()
+    _day_cache.clear()
+
+
+def uptime_rows(first_day):
+    with _lock:
+        rows = _get().execute("SELECT * FROM uptime WHERE day >= ?", (first_day,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def store_uptime(rows, days):
+    """Replace the hourly rows of whole days (the cloud side)."""
+    with _lock:
+        conn = _get()
+        for day in days:
+            conn.execute("DELETE FROM uptime WHERE day = ?", (day,))
+        conn.executemany(
+            "INSERT OR REPLACE INTO uptime (day, hour, camera, online, offline, drops, last_online)"
+            " VALUES (:day, :hour, :camera, :online, :offline, :drops, :last_online)", rows)
+        conn.commit()
+
+
+def store_camera_days(rows):
+    with _lock:
+        conn = _get()
+        conn.executemany(
+            "INSERT OR REPLACE INTO camera_days (day, camera, name, running, off, not_watched,"
+            " drops, last_online) VALUES (:day, :camera, :name, :running, :off, :not_watched,"
+            " :drops, :last_online)", rows)
+        conn.commit()
+
+
 def purge_older_than(days=90):
     cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
     with _lock:

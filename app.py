@@ -11,12 +11,18 @@ import numpy as np
 from flask import (Flask, Response, abort, jsonify, redirect, render_template,
                    request, send_from_directory)
 
+import cloud
 import config
 import events
 import photos
 import scan
 from cameras import manager
 from detection import pipeline
+
+if cloud.CLOUD:
+    # The cloud copy has no cameras of its own: the pages read what the
+    # office PC sent (see cloud.py).
+    manager, pipeline = cloud.ManagerView(), cloud.PipelineView()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -30,6 +36,7 @@ PORT = int(os.environ.get("PORT", 8000))      # Render and the like set PORT
 
 app = Flask(__name__)
 app.config["TEMPLATES_AUTO_RELOAD"] = True
+cloud.install(app)
 
 
 # ---------------------------------------------------------------- pages
@@ -99,15 +106,21 @@ def _models():
 @app.get("/settings")
 def settings_page():
     return _page("settings.html", "settings", models=_models(),
-                 office=config.get("office"),
-                 detection=config.get("detection"),
-                 keep_days=config.get("photos").get("keep_days", 30))
+                 office=cloud.section("office"),
+                 detection=cloud.section("detection"),
+                 keep_days=cloud.section("photos").get("keep_days", 30))
 
 
 # ---------------------------------------------------------------- api
 
 @app.get("/api/status")
 def api_status():
+    if cloud.CLOUD:
+        return jsonify(cloud.store.status_payload())
+    return jsonify(_status_payload())
+
+
+def _status_payload():
     cams = manager.status()
     live = pipeline.live()
     peaks = events.peak("person_count")
@@ -123,7 +136,7 @@ def api_status():
         on_phone += st.get("on_phone") or 0
         if (st.get("alert") or {}).get("active"):
             alerting.append(cam_id)
-    return jsonify({
+    return {
         "cameras": cams,
         "detection": pipeline.status(),
         "total": total,
@@ -135,7 +148,7 @@ def api_status():
         "alerts_today": events.count_today("restricted_alert"),
         "phone_today": events.count_today("phone_use", with_photos=True),
         "server_time": datetime.now().isoformat(timespec="seconds"),
-    })
+    }
 
 
 def _day_arg():
@@ -167,7 +180,7 @@ def api_alert(event_id):
 def api_people_day():
     """People in view hour by hour, for the dashboard chart."""
     out = events.people_by_hour(_day_arg())
-    office = config.get("office")
+    office = cloud.section("office")
     out["open"], out["close"] = office.get("open"), office.get("close")
     return jsonify(out)
 
@@ -491,6 +504,8 @@ def _blank(text):
 def frame_jpg(cam_id):
     """The camera wall polls this - one small request per tile, not a video
     stream per tile (a browser only opens 6 connections to one server)."""
+    if cloud.CLOUD:
+        return cloud.frame_response(cam_id, _blank)
     width = min(int(request.args.get("w", 480)), 1280)
     overlay = request.args.get("overlay", "1") != "0"
     caption = request.args.get("caption", "1") != "0"
@@ -513,6 +528,8 @@ def snapshot(cam_id):
 def live(cam_id):
     """Full-rate video of one camera. While it is open the camera decodes
     every frame and is checked more often."""
+    if cloud.CLOUD:
+        return cloud.live_response(cam_id, _blank)
     stream = manager.get(cam_id)
     if stream is None:
         abort(404)
@@ -615,10 +632,15 @@ def main():
                   "another window. Close it first.", PORT)
         return
     os.makedirs(photos.PHOTO_DIR, exist_ok=True)
+    threading.Thread(target=_housekeeping, name="housekeeping", daemon=True).start()
+    if cloud.CLOUD:
+        log.info("cloud view: showing what the office PC sends, on port %s", PORT)
+        app.run(host="0.0.0.0", port=PORT, threaded=True, debug=False, use_reloader=False)
+        return
     manager.start()
     pipeline.start()
-    threading.Thread(target=_housekeeping, name="housekeeping", daemon=True).start()
     threading.Thread(target=_uptime_watch, name="uptime", daemon=True).start()
+    cloud.uplink.start(_status_payload, _render, manager.listing)
     log.info("open  http://localhost:%s", PORT)
     try:
         app.run(host="0.0.0.0", port=PORT, threaded=True,

@@ -29,18 +29,31 @@ default) downloads itself on first start.
 
 ## Deploying
 
-OfficeEye reads the cameras over the office network, so it has to run on a
-machine **inside that network** - the office PC. A cloud host (Render,
-Vercel, ...) cannot reach cameras at 192.168.x.x addresses: there it starts
-and the pages work, but every camera stays offline. To see the office app
-from home or a phone, run it on the office PC and reach that PC through
-Tailscale (or a Cloudflare Tunnel with a login in front - the app itself has
-no login).
+OfficeEye reads the cameras over the office network, so the real work runs
+on a machine **inside that network** - the office PC. A cloud host cannot
+reach cameras at 192.168.x.x addresses.
 
-For a demo of the pages anyway, the repository deploys to Render as a Docker
-web service: **New + -> Blueprint** -> pick this repository (`render.yaml`).
-The free plan has 512 MB of memory, which is tight for the model; choose
-YOLO26n under Settings if it restarts. Its disk is wiped on every restart.
+**Cloud view (open it from anywhere).** The same code runs on Render as a
+read-only copy behind a password, and the office PC *sends* it what it sees
+(`cloud.py`): the live status every few seconds, the alert, phone and count
+records with their photos, the running-time records, and camera pictures -
+only of cameras somebody is looking at there. Camera links and passwords
+never leave the office.
+
+1. Render: **New + -> Blueprint** -> pick this repository (`render.yaml`).
+   A Render service runs as the cloud view by itself.
+2. Office PC: **Settings -> Cloud view** - put in the Render link, press
+   **Save**, **Copy** the push token.
+3. Render -> the service -> **Environment**: add `OFFICEEYE_PUSH_TOKEN` (the
+   token) and `OFFICEEYE_PASSWORD` (a password you choose for logging in).
+4. Office PC: set **Send to the cloud** to *On*.
+
+The bar at the top of the cloud view says when the office PC last sent
+data; if it stops (PC off, no internet) the records stay but nothing is
+live. Render's free plan wipes its disk on a restart - the office PC then
+sends the last three days again by itself. While somebody watches, it uses
+about 0.5-3 MB a minute of the office upload; with nobody watching, almost
+nothing.
 
 ## Setting up 30 cameras
 
@@ -183,6 +196,7 @@ draws appears on the live video.
 | `yolo26s.pt` | the detection model, downloaded on first start (choose another under Settings) |
 | `yolo26n.pt`, `yolo26n-objv1-150.pt`, `yolo11n.pt`, `yolo11s.pt` | faster / older models to fall back to, if downloaded |
 | `tools/` | training helpers: collect frames, pre-label, review labels |
+| `cloud.py` | the cloud view: login and read-only copy on Render, and the office uplink |
 | `Dockerfile`, `render.yaml` | container and Render deploy (see Deploying) |
 | `data/` | config, `events.db` and `photos/` - back this up, do not commit it |
 

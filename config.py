@@ -43,6 +43,13 @@ DEFAULTS = {
     "photos": {
         "keep_days": 30,
     },
+    # Send what the office sees to the cloud view (cloud.py). The token is
+    # the shared secret; the cloud host gets the same one as OFFICEEYE_PUSH_TOKEN.
+    "cloud": {
+        "enabled": False,
+        "url": "",
+        "token": "",
+    },
 }
 
 _lock = threading.RLock()

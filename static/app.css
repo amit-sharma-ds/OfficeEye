@@ -208,6 +208,26 @@ h2.sec { margin: 0; font-size: 16px; color: var(--ink-2); }
                 gap: 8px; padding: 0 10px 10px; color: #9ca3af; font-size: 12px; }
 .tile-actions button { background: #1f2937; color: #e5e7eb; border-color: #374151; }
 
+/* ---------------------------------------------------------- cloud view */
+.cloud-bar { background: #eef2ff; border: 1px solid #c7d2fe; color: #3730a3;
+             border-radius: 8px; padding: 8px 14px; margin-bottom: 16px;
+             font-size: 13px; font-weight: 600; }
+.cloud-bar.away { background: var(--red-bg); border-color: #fecaca; color: #991b1b; }
+.sidebar .logout { color: #9ca3af; font-size: 12px; text-decoration: none; }
+.sidebar .logout:hover { color: #fff; }
+.toast.info { border-color: #c7d2fe; border-left-color: var(--brand); }
+.toast.info b { color: var(--brand-2); }
+body.login-page { align-items: center; justify-content: center; padding: 16px; }
+.login-box { background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+             padding: 26px 26px 18px; width: min(360px, 100%);
+             display: flex; flex-direction: column; gap: 8px; }
+.login-brand { font-size: 22px; font-weight: 700; margin-bottom: 10px; }
+.login-brand small { display: block; font-size: 12px; font-weight: 500; color: var(--mute); }
+.login-box label { font-size: 12px; color: var(--ink-2); }
+.login-box button { margin-top: 6px; }
+.login-box .hint { margin: 10px 0 0; font-size: 12px; }
+.login-error { color: var(--red); font-size: 13px; margin: 0; }
+
 /* ---------------------------------------------------------- dashboard */
 .dash-head { display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap;
              margin-bottom: 16px; }
