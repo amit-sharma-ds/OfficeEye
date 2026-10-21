@@ -1,0 +1,8 @@
+.git
+.claude
+data
+runs
+*.pt
+*.log
+__pycache__
+*.pyc

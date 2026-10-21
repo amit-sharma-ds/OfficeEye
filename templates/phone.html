@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block title %}Phone use{% endblock %}
+
+{% block body %}
+<h1>Phone use</h1>
+<p class="sub">People using a phone on the counting cameras. A phone counts only
+   when it is raised - held up to read or to the ear - and seen twice in a row;
+   then one photo is taken, at most one per camera per minute.</p>
+
+<div class="stats three">
+  <div class="stat">
+    <div class="stat-k">On phone now</div>
+    <div class="stat-n" id="p-now">-</div>
+    <div class="stat-sub" id="p-now-sub">&nbsp;</div>
+  </div>
+  <div class="stat">
+    <div class="stat-k">Photos today</div>
+    <div class="stat-n" id="p-today">-</div>
+    <div class="stat-sub">times somebody was caught</div>
+  </div>
+  <div class="stat">
+    <div class="stat-k">Cameras checking</div>
+    <div class="stat-n" id="p-cams">-</div>
+    <div class="stat-sub">counting cameras online</div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head"><h2>Right now</h2></div>
+  <div class="chips wrap" id="now"><p class="empty">Nobody is on a phone.</p></div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <h2>Photos</h2>
+    <select id="cam" class="date">
+      <option value="">All cameras</option>
+      {% for cam in cameras %}<option value="{{ cam.id }}">{{ cam.name }}</option>{% endfor %}
+    </select>
+    <input type="date" id="day" class="date">
+  </div>
+  <div class="incidents" id="gallery"><p class="empty">Loading&hellip;</p></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const day = $('#day'), cam = $('#cam');
+day.value = today();
+day.max = today();
+day.onchange = cam.onchange = () => load();
+let shown = [];
+
+async function load() {
+  const q = `day=${day.value}&limit=300` + (cam.value ? `&camera=${encodeURIComponent(cam.value)}` : '');
+  const {events} = await api('/api/phone?' + q);
+  shown = events;
+  $('#gallery').innerHTML = events.length ? events.map((e, i) => {
+    const name = names[e.camera] || e.camera;
+    return `<button class="incident amber" data-i="${i}">` +
+      `<img src="${esc(eventThumb(e))}" alt="">` +
+      `<div class="inc-body"><b>${esc(name)}</b><span>${clock(e.ts)}</span>` +
+      `<span>${plural(e.value, 'person')} on a phone</span></div></button>`;
+  }).join('') : '<p class="empty">No phone use on this day.</p>';
+  $$('#gallery .incident').forEach(b => b.onclick = () => {
+    const e = shown[+b.dataset.i];
+    openPhotos(eventPhotos(e, names[e.camera] || e.camera), 0);
+  });
+}
+
+let known = null;
+window.onStatus = (s) => {
+  const cams = Object.values(s.cameras).filter(c => c.group === 'count');
+  const on = cams.filter(c => c.on_phone > 0);
+  $('#p-now').textContent = s.detection.state === 'running' ? s.on_phone_total : '-';
+  $('#p-now').classList.toggle('warn', s.on_phone_total > 0);
+  $('#p-now-sub').textContent = on.length ? `on ${plural(on.length, 'camera')}` : ' ';
+  $('#p-today').textContent = s.phone_today;
+  $('#p-cams').textContent = cams.filter(c => c.state === 'connected').length;
+
+  $('#now').innerHTML = on.length ? on.map(c =>
+    `<button data-id="${esc(c.id)}">${esc(c.name)} <b>${c.on_phone}</b></button>`).join('')
+    : '<p class="empty">Nobody is on a phone.</p>';
+  $$('#now button').forEach(b => b.onclick = () => openLive(b.dataset.id, names[b.dataset.id]));
+
+  if (day.value === today() && s.phone_today !== known) {
+    known = s.phone_today;
+    load().catch(() => {});
+  }
+};
+</script>
+{% endblock %}

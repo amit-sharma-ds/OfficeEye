@@ -1,0 +1,114 @@
+{# Add buttons, Scan network, progress and results. Expects: add_label. #}
+<div class="actions">
+  <button class="add" id="add"><span class="plus">+</span> {{ add_label }}</button>
+  <button class="ghost" id="add-r"><span class="plus">+</span> Add restricted camera</button>
+  <button class="ghost scan-btn" id="scan">Scan network</button>
+</div>
+
+<div class="card scan-card" id="scan-results" hidden>
+  <div class="card-head">
+    <h2>Network scan</h2>
+    <label class="inline">Add as
+      <select id="scan-group">
+        <option value="count">Counting</option>
+        <option value="restricted">Restricted</option>
+      </select>
+    </label>
+    <button class="primary" id="scan-all" hidden>Add all new</button>
+    <button class="ghost" id="scan-close">Close</button>
+  </div>
+  <p class="scan-line" id="scan-line">Starting&hellip;</p>
+  <div class="scan-bar"><div class="scan-fill" id="scan-fill"></div></div>
+  <ul class="found" id="found"></ul>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+  const box  = document.getElementById('scan-results');
+  const line = document.getElementById('scan-line');
+  const fill = document.getElementById('scan-fill');
+  const list = document.getElementById('found');
+  const all  = document.getElementById('scan-all');
+  const grp  = document.getElementById('scan-group');
+  let timer = null;
+
+  const stop = () => { if (timer) { clearInterval(timer); timer = null; } };
+
+  function render(s) {
+    fill.style.width = (s.total ? Math.round(100 * s.checked / s.total) : 0) + '%';
+    const where = s.subnet ? s.subnet + '.x' : 'the network';
+    const fresh = s.found.filter(f => !f.already_added).length;
+    if (s.state === 'scanning')
+      line.textContent = `Scanning ${where} — checked ${s.checked}/${s.total}, found ${s.found.length}`;
+    else if (s.error)
+      line.textContent = s.error;
+    else
+      line.textContent = `Done — found ${s.found.length} camera(s) on ${where}, ${fresh} not added yet`;
+    all.hidden = !fresh;
+    all.textContent = `Add all ${fresh} new`;
+
+    if (!s.found.length) {
+      list.innerHTML = s.state === 'scanning' ? ''
+        : '<li class="empty">No cameras found on the network.</li>';
+      return;
+    }
+    list.innerHTML = s.found.map(f => {
+      const meta = [f.server, f.resolution].filter(Boolean).join(' · ');
+      const main = `<div class="f-main"><b>${esc(f.ip)}</b>`
+                 + ` <span class="f-url">${esc(f.url)}</span>`
+                 + (meta ? ` <span class="f-meta">${esc(meta)}</span>` : '') + `</div>`;
+      const right = f.already_added
+        ? `<span class="f-tag">already added</span>`
+        : `<button class="primary sm f-add" data-ip="${esc(f.ip)}">Add</button>`;
+      return `<li class="${f.already_added ? 'added' : ''}">${main}${right}</li>`;
+    }).join('');
+    list.querySelectorAll('.f-add').forEach(b => b.onclick = () => addOne(b));
+  }
+
+  async function addOne(btn) {
+    btn.disabled = true;
+    const was = btn.textContent;
+    btn.textContent = 'Adding…';
+    const r = await post('/api/scan/add', { ip: btn.dataset.ip, group: grp.value });
+    if (r.ok) { location.reload(); return; }
+    btn.textContent = was;
+    btn.disabled = false;
+    line.textContent = r.message || 'Could not add that camera';
+    refresh();
+  }
+
+  all.onclick = async () => {
+    all.disabled = true;
+    all.textContent = 'Adding…';
+    const r = await post('/api/scan/add-all', { group: grp.value });
+    line.textContent = r.message;
+    location.reload();
+  };
+
+  async function refresh() {
+    let s;
+    try { s = await api('/api/scan'); } catch (e) { return; }
+    render(s);
+    if (s.state === 'scanning' && !timer) timer = setInterval(refresh, 1000);
+    if (s.state !== 'scanning') stop();
+  }
+
+  document.getElementById('scan').onclick = async () => {
+    box.hidden = false;
+    line.textContent = 'Starting…';
+    list.innerHTML = '';
+    fill.style.width = '0%';
+    await post('/api/scan');
+    refresh();
+    if (!timer) timer = setInterval(refresh, 1000);
+  };
+  document.getElementById('scan-close').onclick = () => { box.hidden = true; stop(); };
+
+  // Coming back to the page while a scan is running (or just finished)? Show it.
+  api('/api/scan').then(s => {
+    render(s);
+    if (s.state === 'scanning' || (s.state === 'done' && s.found.length)) box.hidden = false;
+    if (s.state === 'scanning' && !timer) timer = setInterval(refresh, 1000);
+  }).catch(() => {});
+});
+</script>

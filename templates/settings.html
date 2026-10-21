@@ -1,0 +1,159 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+
+{% block body %}
+<h1>Settings</h1>
+<p class="sub">The detection engine, how long photos are kept, and the office clock.
+   Cameras are on their own page.</p>
+
+<div class="card">
+  <h2>How hard the engine is working</h2>
+  <p class="hint">One model checks every camera in turn - restricted cameras first,
+     then the camera you are watching, then counting cameras where something
+     moved. A quiet picture is not checked again until it changes.</p>
+  <div class="perf" id="perf">
+    <div><span>Running on</span><b id="pf-dev">-</b></div>
+    <div><span>Time per picture</span><b id="pf-ms">-</b></div>
+    <div><span>Pictures checked</span><b id="pf-rate">-</b></div>
+    <div><span>Engine busy</span><b id="pf-load">-</b></div>
+    <div><span>Restricted: seen within</span><b id="pf-lr">-</b></div>
+    <div><span>Counting: seen within</span><b id="pf-lc">-</b></div>
+    <div><span>Video decoding</span><b id="pf-dec">-</b></div>
+  </div>
+  <p class="hint" id="pf-advice"></p>
+</div>
+
+<div class="card">
+  <h2>Detection</h2>
+  <div class="row">
+    <div class="field grow"><label>Model</label>
+      <select id="det-model">
+        {% for file, label in models %}
+        <option value="{{ file }}" {{ 'selected' if detection.model == file }}>{{ label }}</option>
+        {% endfor %}
+      </select></div>
+  </div>
+  <div class="row" style="margin-top:14px">
+    <div class="field"><label>Engine</label>
+      <select id="det-enabled">
+        <option value="1" {{ 'selected' if detection.enabled }}>On</option>
+        <option value="0" {{ '' if detection.enabled else 'selected' }}>Off</option>
+      </select></div>
+    <div class="field"><label>Picture size for the model</label>
+      <select id="det-imgsz">
+        {% for v, t in [(320, '320 - fastest'), (416, '416 - fast'), (480, '480 - balanced'), (640, '640 - sharpest, best for phones')] %}
+        <option value="{{ v }}" {{ 'selected' if detection.imgsz == v }}>{{ t }}</option>
+        {% endfor %}
+      </select></div>
+    <div class="field"><label>Confidence</label>
+      <input type="number" id="det-conf" min="0.1" max="0.95" step="0.05"
+             value="{{ detection.confidence }}"></div>
+    <div class="field"><label>Look for phones</label>
+      <select id="det-phone">
+        <option value="1" {{ 'selected' if detection.phone }}>Yes</option>
+        <option value="0" {{ '' if detection.phone else 'selected' }}>No</option>
+      </select></div>
+  </div>
+  <div class="row" style="margin-top:14px">
+    <div class="field"><label>Re-check a quiet counting camera every (s)</label>
+      <input type="number" id="det-refresh" min="5" max="600" step="5"
+             value="{{ detection.count_refresh }}"></div>
+    <div class="field"><label>Restricted camera: checks per second</label>
+      <input type="number" id="det-rfps" min="0.5" max="15" step="0.5"
+             value="{{ detection.restricted_fps }}"></div>
+    <button class="primary" id="det-save">Save</button>
+  </div>
+  <p class="status" id="det-status"></p>
+</div>
+
+<div class="card">
+  <h2>Photos</h2>
+  <p class="hint">Restricted-area alerts and phone use are saved with photos in
+     <code>data/photos</code>. Older days are deleted automatically.</p>
+  <div class="row">
+    <div class="field"><label>Keep photos for (days)</label>
+      <input type="number" id="keep" min="1" max="3650" value="{{ keep_days }}"></div>
+    <button class="primary" id="keep-save">Save</button>
+  </div>
+  <p class="status" id="keep-status"></p>
+</div>
+
+<div class="card">
+  <h2>Office timing</h2>
+  <p class="hint">Used by the daily report.</p>
+  <div class="row">
+    <div class="field"><label>Opens at</label>
+      <input type="time" id="office-open" value="{{ office.open }}"></div>
+    <div class="field"><label>Late after</label>
+      <input type="time" id="office-late" value="{{ office.late_after }}"></div>
+    <div class="field"><label>Closes at</label>
+      <input type="time" id="office-close" value="{{ office.close }}"></div>
+    <button class="primary" id="office-save">Save</button>
+  </div>
+  <p class="status" id="office-status"></p>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+$('#office-save').onclick = async () => {
+  const r = await post('/api/office', {
+    open: $('#office-open').value,
+    late_after: $('#office-late').value,
+    close: $('#office-close').value,
+  });
+  $('#office-status').textContent = r.message;
+};
+
+$('#det-save').onclick = async () => {
+  const btn = $('#det-save');
+  btn.disabled = true;
+  const r = await post('/api/detection', {
+    model: $('#det-model').value,
+    enabled: $('#det-enabled').value === '1',
+    phone: $('#det-phone').value === '1',
+    imgsz: $('#det-imgsz').value,
+    confidence: $('#det-conf').value,
+    count_refresh: $('#det-refresh').value,
+    restricted_fps: $('#det-rfps').value,
+  });
+  $('#det-status').textContent = r.message + ' - it takes effect within a few seconds.';
+  btn.disabled = false;
+};
+
+$('#keep-save').onclick = async () => {
+  const r = await post('/api/photos', {keep_days: $('#keep').value});
+  $('#keep').value = r.keep_days;
+  $('#keep-status').textContent = r.message;
+  usage();
+};
+async function usage() {
+  const u = await api('/api/photos/usage');
+  $('#keep-status').textContent = `${u.files} photo files, ${u.mb} MB on disk`;
+}
+usage();
+
+const secs = (x) => x == null ? '-' : x < 1 ? 'under 1 s' : `${x} s`;
+window.onStatus = (s) => {
+  const d = s.detection, p = d.perf;
+  const running = d.state === 'running';
+  $('#pf-dev').textContent = running ? `${d.device} (batches of ${d.batch})`
+    : d.state === 'loading' ? 'loading the model...' : d.state === 'error' ? 'error' : 'off';
+  $('#pf-ms').textContent = running && p.ms_per_frame ? `${p.ms_per_frame} ms` : '-';
+  $('#pf-rate').textContent = running ? `${p.per_second} per second` : '-';
+  $('#pf-load').textContent = running ? `${Math.round(p.load * 100)}%` : '-';
+  $('#pf-lr').textContent = secs(p.lag_restricted);
+  $('#pf-lc').textContent = secs(p.lag_count);
+  const cams = Object.values(s.cameras).filter(c => c.state === 'connected');
+  const full = cams.filter(c => c.mode === 'full').length;
+  $('#pf-dec').textContent = cams.length
+    ? `${full} every frame, ${cams.length - full} keyframes only` : '-';
+  if (d.error) $('#det-status').textContent = 'Error: ' + d.error;
+
+  $('#pf-advice').textContent = !running ? '' : p.load > 0.85
+    ? 'The engine is nearly always busy, so cameras wait their turn. Use a smaller picture ' +
+      'size, re-check quiet cameras less often, or move the app to a PC with an NVIDIA GPU.'
+    : 'There is room to spare.';
+};
+</script>
+{% endblock %}

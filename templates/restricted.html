@@ -1,0 +1,223 @@
+{% extends "base.html" %}
+{% block title %}Restricted area{% endblock %}
+
+{% block body %}
+<h1>Restricted area</h1>
+<p class="sub">Cameras watching places nobody should be. Anybody who steps into
+   the zone raises an alert straight away - with a beep on every open page and
+   photos of the person. These cameras are checked first and watch every frame.</p>
+
+<div class="banner static" id="banner" hidden></div>
+
+{% if cameras %}
+<div class="wall big" id="wall">
+  {% for cam in cameras %}
+  <div class="tile r" data-id="{{ cam.id }}">
+    <div class="shot" role="button" tabindex="0" aria-label="Watch {{ cam.name }} live">
+      <img alt="">
+      <span class="pill n" hidden></span>
+    </div>
+    <div class="meta">
+      <span class="nm">{{ cam.name }}</span>
+      <span class="st"><span class="dot off"></span><span class="tx">...</span></span>
+    </div>
+    <div class="tile-actions">
+      <span class="zone-state">{{ 'Zone drawn' if cam.zone else 'Whole picture watched' }}</span>
+      <button class="ghost sm zone-btn">Edit zone</button>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<div class="card">
+  <p class="empty">No restricted cameras yet. On the <a href="/cameras">Cameras</a>
+     page, set a camera's <b>Purpose</b> to <i>Restricted</i>, or press
+     <b>+ Add restricted camera</b> there.</p>
+</div>
+{% endif %}
+
+<div class="card">
+  <div class="card-head">
+    <h2>Alerts</h2>
+    <span class="hint-inline" id="alert-count"></span>
+    <input type="date" id="day" class="date">
+  </div>
+  <div class="incidents" id="incidents"><p class="empty">Loading&hellip;</p></div>
+</div>
+
+<!-- zone editor -->
+<div class="modal" id="zone" hidden>
+  <div class="modal-box wide">
+    <div class="modal-head">
+      <b>Restricted zone - <span id="zone-name"></span></b>
+      <button class="x" data-close aria-label="Close">&times;</button>
+    </div>
+    <p class="hint">Click around the floor area nobody may enter; drag a corner to
+       move it. A person counts as inside when their <b>feet</b> are inside the
+       shape. With no shape the whole picture is watched.</p>
+    <div class="zone-wrap">
+      <img id="zone-img" alt="">
+      <canvas id="zone-canvas"></canvas>
+    </div>
+    <div class="row end">
+      <span class="status" id="zone-status"></span>
+      <button class="ghost" id="zone-undo">Undo point</button>
+      <button class="ghost" id="zone-clear">Clear</button>
+      <button class="primary" id="zone-save">Save zone</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const ZONES = {{ cameras|map(attribute='zone')|list|tojson }};
+const IDS = {{ cameras|map(attribute='id')|list|tojson }};
+const zones = {};
+IDS.forEach((id, i) => zones[id] = ZONES[i] || []);
+
+$$('.tile').forEach(t => {
+  const id = t.dataset.id, name = $('.nm', t).textContent;
+  $('.shot', t).onclick = () => openLive(id, name);
+  $('.shot', t).onkeydown = (e) => { if (e.key === 'Enter') openLive(id, name); };
+  $('.zone-btn', t).onclick = () => editZone(id, name);
+});
+
+// ------------------------------------------------------------ zone editor
+let zId = null, pts = [], drag = -1;
+const cv = $('#zone-canvas'), zimg = $('#zone-img');
+
+function editZone(id, name) {
+  zId = id;
+  pts = (zones[id] || []).map(p => [p[0], p[1]]);
+  $('#zone-name').textContent = name;
+  $('#zone-status').textContent = '';
+  zimg.onload = () => { fit(); draw(); };
+  zimg.src = `/frame/${encodeURIComponent(id)}.jpg?w=960&overlay=0&t=${Date.now()}`;
+  openModal($('#zone'));
+}
+function fit() {
+  cv.width = zimg.clientWidth;
+  cv.height = zimg.clientHeight;
+}
+window.addEventListener('resize', () => { if (!$('#zone').hidden) { fit(); draw(); } });
+
+function draw() {
+  const g = cv.getContext('2d'), W = cv.width, H = cv.height;
+  g.clearRect(0, 0, W, H);
+  if (!pts.length) return;
+  g.beginPath();
+  pts.forEach(([x, y], i) => i ? g.lineTo(x * W, y * H) : g.moveTo(x * W, y * H));
+  if (pts.length > 2) {
+    g.closePath();
+    g.fillStyle = 'rgba(220, 38, 38, .22)';
+    g.fill();
+  }
+  g.strokeStyle = '#dc2626'; g.lineWidth = 2; g.stroke();
+  pts.forEach(([x, y], i) => {
+    g.beginPath();
+    g.arc(x * W, y * H, i ? 5 : 7, 0, Math.PI * 2);
+    g.fillStyle = i ? '#fff' : '#dc2626';
+    g.fill();
+    g.strokeStyle = '#dc2626'; g.stroke();
+  });
+}
+function at(e) {
+  const r = cv.getBoundingClientRect();
+  return [Math.min(Math.max((e.clientX - r.left) / r.width, 0), 1),
+          Math.min(Math.max((e.clientY - r.top) / r.height, 0), 1)];
+}
+function near(p) {
+  const W = cv.width, H = cv.height;
+  return pts.findIndex(([x, y]) => Math.hypot((x - p[0]) * W, (y - p[1]) * H) < 10);
+}
+cv.onpointerdown = (e) => {
+  const p = at(e), i = near(p);
+  if (i >= 0) { drag = i; cv.setPointerCapture(e.pointerId); return; }
+  pts.push(p); draw();
+};
+cv.onpointermove = (e) => { if (drag >= 0) { pts[drag] = at(e); draw(); } };
+cv.onpointerup = () => { drag = -1; };
+$('#zone-undo').onclick = () => { pts.pop(); draw(); };
+$('#zone-clear').onclick = () => { pts = []; draw(); };
+$('#zone-save').onclick = async () => {
+  if (pts.length && pts.length < 3) {
+    $('#zone-status').textContent = 'A zone needs at least 3 corners';
+    return;
+  }
+  const r = await post(`/api/cameras/${encodeURIComponent(zId)}/zone`, {zone: pts});
+  zones[zId] = r.zone;
+  const tile = $(`.tile[data-id="${CSS.escape(zId)}"]`);
+  $('.zone-state', tile).textContent = r.zone.length ? 'Zone drawn' : 'Whole picture watched';
+  $('img', tile).dataset.key = '';
+  closeModal($('#zone'));
+};
+
+// ------------------------------------------------------------ alerts list
+const day = $('#day');
+day.value = today();
+day.max = today();
+day.onchange = () => loadAlerts();
+let lastLoaded = null;
+
+async function loadAlerts() {
+  const {alerts} = await api(`/api/alerts?day=${day.value}&limit=200`);
+  lastLoaded = alerts;
+  $('#alert-count').textContent = alerts.length ? plural(alerts.length, 'alert') : '';
+  $('#incidents').innerHTML = alerts.length ? alerts.map((a, i) => {
+    const m = a.meta || {};
+    const name = names[a.camera] || a.camera;
+    const shots = (m.photos || []).reduce((n, s) => n + 1 + (s.crops || []).length, 0);
+    const th = eventThumb(a);
+    const ongoing = !m.ended && day.value === today();
+    return `<button class="incident ${ongoing ? 'live' : ''}" data-i="${i}">` +
+      (th ? `<img src="${esc(th)}" alt="">` : '<span class="noimg">no photo</span>') +
+      `<div class="inc-body"><b>${esc(name)}</b>` +
+      `<span>${clock(a.ts)} · ${plural(m.people || a.value, 'person')}</span>` +
+      `<span>${ongoing ? 'still there' : (m.seconds != null ? 'for ' + m.seconds + ' s' : '')}` +
+      ` · ${plural(shots, 'photo')}</span></div></button>`;
+  }).join('') : '<p class="empty">No alerts on this day.</p>';
+  $$('#incidents .incident').forEach(b => b.onclick = () => {
+    const a = lastLoaded[+b.dataset.i];
+    openPhotos(eventPhotos(a, names[a.camera] || a.camera), 0);
+  });
+}
+
+// ------------------------------------------------------------ live state
+let knownLatest = null, listAt = 0;
+window.onStatus = (s) => {
+  $$('.tile').forEach(tile => {
+    const c = s.cameras[tile.dataset.id];
+    if (!c) return;
+    const a = c.alert || {};
+    tile.classList.toggle('alert', !!a.active);
+    const n = $('.n', tile);
+    n.hidden = !a.active;
+    n.textContent = a.active ? `ALERT - ${a.count} inside` : '';
+    $('.dot', tile).className = 'dot ' + c.state;
+    $('.tx', tile).textContent = c.state !== 'connected'
+      ? (c.state === 'off' ? 'no IP set' : c.state === 'connecting' ? 'connecting...' : 'offline')
+      : !a.watching ? 'waiting for detection' : a.active ? 'ALERT' : 'clear';
+    const img = $('img', tile);
+    const key = c.state === 'connected' ? `${c.seq}-${c.ver}` : c.state;
+    if (img.dataset.key !== key) {
+      img.dataset.key = key;
+      img.src = `/frame/${encodeURIComponent(tile.dataset.id)}.jpg?w=640&k=${encodeURIComponent(key)}`;
+    }
+  });
+
+  const live = s.alerting.map(id => names[id] || id);
+  $('#banner').hidden = !live.length;
+  $('#banner').textContent = live.length ? 'Someone is in ' + live.join(', ') + ' right now' : '';
+
+  // New alert, or one still open whose photos keep coming: reload the list.
+  if (day.value === today() &&
+      (s.latest_alert !== knownLatest || (live.length && Date.now() - listAt > 4000))) {
+    knownLatest = s.latest_alert;
+    listAt = Date.now();
+    loadAlerts().catch(() => {});
+  }
+};
+loadAlerts();
+</script>
+{% endblock %}

@@ -1,0 +1,8 @@
+# Render Blueprint: New + -> Blueprint -> pick this repo.
+services:
+  - type: web
+    name: officeeye
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/status
+    autoDeploy: true

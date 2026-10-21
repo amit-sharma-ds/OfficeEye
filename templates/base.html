@@ -1,0 +1,378 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}{% endblock %} - OfficeEye</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand">OfficeEye<small>office camera monitor</small></div>
+
+    <nav>
+      <a href="/"           class="{{ 'on' if page == 'dashboard' }}">Dashboard</a>
+      <a href="/live"       class="{{ 'on' if page == 'live' }}">Live cameras</a>
+      <a href="/restricted" class="{{ 'on' if page == 'restricted' }}">Restricted area
+        <span class="badge" id="alert-badge" hidden></span></a>
+      <a href="/phone"      class="{{ 'on' if page == 'phone' }}">Phone use
+        <span class="badge amber" id="phone-badge" hidden></span></a>
+      <a href="/cameras"    class="{{ 'on' if page == 'cameras' }}">Cameras</a>
+      <a href="/running-time" class="{{ 'on' if page == 'running' }}">Camera running time</a>
+      <a href="/settings"   class="{{ 'on' if page == 'settings' }}">Settings</a>
+    </nav>
+
+    <div class="foot">
+      <button class="sound" id="sound" type="button"></button>
+      <div class="engine" id="engine">Detection: starting&hellip;</div>
+      <div id="clock"></div>
+    </div>
+  </aside>
+
+  <div class="content">{% block body %}{% endblock %}</div>
+
+  <!-- live video of one camera -->
+  <div class="modal" id="live" hidden>
+    <div class="modal-box wide">
+      <div class="modal-head">
+        <b id="live-name"></b>
+        <span class="modal-sub" id="live-info"></span>
+        <button class="ghost sm" id="live-ignore" title="Mark posters, TVs and the like that are mistaken for people">Ignore areas</button>
+        <button class="x" data-close aria-label="Close">&times;</button>
+      </div>
+      <img id="live-img" class="live-img" alt="">
+    </div>
+  </div>
+
+  <!-- ignore areas of one camera -->
+  <div class="modal" id="ignore" hidden>
+    <div class="modal-box wide">
+      <div class="modal-head">
+        <b>Ignore areas - <span id="ig-name"></span></b>
+        <button class="x" data-close aria-label="Close">&times;</button>
+      </div>
+      <p class="hint">Drag a box over anything that gets mistaken for a person - a
+         poster, a TV, a mannequin. Nothing whose middle is inside a box is ever
+         counted. Click a box to remove it.</p>
+      <div class="zone-wrap">
+        <img id="ig-img" alt="">
+        <canvas id="ig-canvas"></canvas>
+      </div>
+      <div class="row end">
+        <span class="status" id="ig-status"></span>
+        <button class="ghost" id="ig-clear">Clear all</button>
+        <button class="primary" id="ig-save">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- photo viewer -->
+  <div class="modal dark" id="lightbox" hidden>
+    <div class="lb">
+      <img id="lb-img" alt="">
+      <div class="lb-bar">
+        <button class="ghost" id="lb-prev" aria-label="Previous">&lsaquo;</button>
+        <span id="lb-cap"></span>
+        <button class="ghost" id="lb-next" aria-label="Next">&rsaquo;</button>
+        <a class="lb-dl" id="lb-dl" download>Download</a>
+        <button class="x light" data-close aria-label="Close">&times;</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toasts" id="toasts"></div>
+
+  <script>
+    const $ = (sel, root) => (root || document).querySelector(sel);
+    const $$ = (sel, root) => [...(root || document).querySelectorAll(sel)];
+    const api = async (url) => (await fetch(url)).json();
+    const post = async (url, body) => {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body || {}),
+      });
+      return res.json();
+    };
+    const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c =>
+      ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+    const clock = (iso) => (iso || '').slice(11, 19);
+    const today = () => {
+      const d = new Date();
+      return new Date(d - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+    };
+    const ago = (sec) => sec == null ? '' : sec < 60 ? Math.round(sec) + ' s ago'
+                       : sec < 3600 ? Math.round(sec / 60) + ' min ago'
+                       : Math.round(sec / 3600) + ' h ago';
+    const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+    const pageTitle = document.title;
+    const tick = () => { $('#clock').textContent = new Date().toLocaleTimeString(); };
+    tick(); setInterval(tick, 1000);
+
+    // ------------------------------------------------------------ sound
+    // A restricted area is worth hearing about from any page, so the alarm
+    // lives here. Browsers only allow sound after the page was clicked once.
+    const muted = () => { try { return localStorage.getItem('pc-mute') === '1'; }
+                          catch (e) { return false; } };
+    let audio = null;
+    const unlock = () => {
+      if (!audio) { try { audio = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {} }
+      if (audio && audio.state === 'suspended') audio.resume();
+    };
+    document.addEventListener('click', unlock);
+    function paintSound() {
+      $('#sound').textContent = muted() ? 'Alert sound: off' : 'Alert sound: on';
+      $('#sound').classList.toggle('off', muted());
+    }
+    $('#sound').onclick = () => {
+      try { localStorage.setItem('pc-mute', muted() ? '0' : '1'); } catch (e) {}
+      paintSound();
+      if (!muted()) beep(1);
+    };
+    paintSound();
+    function beep(times) {
+      if (muted() || !audio) return;
+      for (let i = 0; i < (times || 3); i++) {
+        const t = audio.currentTime + i * 0.28;
+        const osc = audio.createOscillator(), gain = audio.createGain();
+        osc.connect(gain); gain.connect(audio.destination);
+        osc.type = 'square'; osc.frequency.value = 880; gain.gain.value = 0.07;
+        osc.start(t); osc.stop(t + 0.18);
+      }
+    }
+
+    // ------------------------------------------------------------ modals
+    function openModal(el) { el.hidden = false; document.body.classList.add('locked'); }
+    function closeModal(el) {
+      el.hidden = true;
+      if (!$$('.modal').some(m => !m.hidden)) document.body.classList.remove('locked');
+      if (el.onclose) el.onclose();
+    }
+    $$('.modal').forEach(m => {
+      m.addEventListener('click', e => {
+        if (e.target === m || e.target.closest('[data-close]')) closeModal(m);
+      });
+    });
+    document.addEventListener('keydown', e => {
+      const open = $$('.modal').filter(m => !m.hidden).pop();
+      if (!open) return;
+      if (e.key === 'Escape') closeModal(open);
+      if (open.id === 'lightbox' && e.key === 'ArrowLeft') lbStep(-1);
+      if (open.id === 'lightbox' && e.key === 'ArrowRight') lbStep(1);
+    });
+
+    // Live video. While it is open that camera decodes every frame and is
+    // checked more often; closing it drops the connection.
+    let liveId = null;
+    function openLive(id, name) {
+      liveId = id;
+      $('#live-name').textContent = name || id;
+      $('#live-info').textContent = 'connecting...';
+      $('#live-img').src = `/live/${encodeURIComponent(id)}?w=960`;
+      openModal($('#live'));
+    }
+    $('#live').onclose = () => { liveId = null; $('#live-img').src = 'data:,'; };
+    $('#live-ignore').onclick = () => editIgnore(liveId, $('#live-name').textContent);
+
+    // Ignore areas: boxes dragged over the picture, stored as 4-corner shapes.
+    let igId = null, igBoxes = [], igDraft = null, igHit = -1;
+    const igCv = () => $('#ig-canvas'), igImg = () => $('#ig-img');
+    function editIgnore(id, name) {
+      igId = id;
+      const cam = (lastStatus && lastStatus.cameras[id]) || {};
+      igBoxes = (cam.ignore || []).map(p => {
+        const xs = p.map(q => q[0]), ys = p.map(q => q[1]);
+        return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+      });
+      $('#ig-name').textContent = name || id;
+      $('#ig-status').textContent = '';
+      igImg().onload = () => { igCv().width = igImg().clientWidth;
+                               igCv().height = igImg().clientHeight; igDraw(); };
+      igImg().src = `/frame/${encodeURIComponent(id)}.jpg?w=960&overlay=0&t=${Date.now()}`;
+      openModal($('#ignore'));
+    }
+    function igAt(e) {
+      const r = igCv().getBoundingClientRect();
+      return [Math.min(Math.max((e.clientX - r.left) / r.width, 0), 1),
+              Math.min(Math.max((e.clientY - r.top) / r.height, 0), 1)];
+    }
+    function igDraw() {
+      const cv = igCv(), g = cv.getContext('2d'), W = cv.width, H = cv.height;
+      g.clearRect(0, 0, W, H);
+      const box = (b, dashed) => {
+        const [x1, y1, x2, y2] = [Math.min(b[0], b[2]), Math.min(b[1], b[3]),
+                                  Math.max(b[0], b[2]), Math.max(b[1], b[3])];
+        g.fillStyle = 'rgba(17, 24, 39, .45)';
+        g.fillRect(x1 * W, y1 * H, (x2 - x1) * W, (y2 - y1) * H);
+        g.setLineDash(dashed ? [6, 4] : []);
+        g.strokeStyle = '#f9fafb'; g.lineWidth = 2;
+        g.strokeRect(x1 * W, y1 * H, (x2 - x1) * W, (y2 - y1) * H);
+        g.setLineDash([]);
+        if (!dashed) {
+          g.fillStyle = '#f9fafb'; g.font = '600 12px Segoe UI, sans-serif';
+          g.fillText('ignored  ×', x1 * W + 6, y1 * H + 16);
+        }
+      };
+      igBoxes.forEach(b => box(b, false));
+      if (igDraft) box(igDraft, true);
+    }
+    const igInside = (p) => igBoxes.findIndex(b =>
+      p[0] >= b[0] && p[0] <= b[2] && p[1] >= b[1] && p[1] <= b[3]);
+    $('#ig-canvas').onpointerdown = (e) => {
+      const p = igAt(e);
+      igCv().setPointerCapture(e.pointerId);
+      igHit = igInside(p);
+      igDraft = [p[0], p[1], p[0], p[1]];
+    };
+    $('#ig-canvas').onpointermove = (e) => {
+      if (!igDraft) return;
+      const p = igAt(e);
+      igDraft[2] = p[0]; igDraft[3] = p[1];
+      igDraw();
+    };
+    $('#ig-canvas').onpointerup = () => {
+      if (!igDraft) return;
+      const [a, b, c, d] = igDraft;
+      const big = Math.abs(c - a) > 0.015 && Math.abs(d - b) > 0.015;
+      if (big) {
+        igBoxes.push([Math.min(a, c), Math.min(b, d), Math.max(a, c), Math.max(b, d)]);
+      } else if (igHit >= 0) {
+        igBoxes.splice(igHit, 1);              // a click on a box removes it
+      }
+      igDraft = null; igHit = -1;
+      igDraw();
+    };
+    $('#ig-clear').onclick = () => { igBoxes = []; igDraw(); };
+    $('#ig-save').onclick = async () => {
+      const shapes = igBoxes.map(([x1, y1, x2, y2]) => [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]);
+      const r = await post(`/api/cameras/${encodeURIComponent(igId)}/ignore`, {ignore: shapes});
+      if (lastStatus && lastStatus.cameras[igId]) lastStatus.cameras[igId].ignore = r.ignore;
+      closeModal($('#ignore'));
+    };
+    function paintLive(s) {
+      if (!liveId) return;
+      const c = s.cameras[liveId];
+      if (!c) return;
+      const bits = [];
+      if (c.group === 'restricted') {
+        const a = c.alert || {};
+        bits.push(a.active ? `ALERT - ${a.count} inside` : a.watching ? 'area clear' : 'waiting');
+      } else if (c.count != null) {
+        bits.push(plural(c.count, 'person'));
+        if (c.on_phone) bits.push(`${c.on_phone} on phone`);
+      }
+      if (c.state === 'connected') bits.push(`${c.decoded_fps} fps`);
+      else bits.push(c.error || c.state);
+      $('#live-info').textContent = bits.join(' · ');
+    }
+
+    // Photo viewer: list of {src, caption}.
+    let lbList = [], lbAt = 0;
+    function openPhotos(list, start) {
+      lbList = list; lbAt = start || 0;
+      lbShow();
+      openModal($('#lightbox'));
+    }
+    function lbShow() {
+      const p = lbList[lbAt];
+      if (!p) return;
+      $('#lb-img').src = p.src;
+      $('#lb-dl').href = p.src;
+      $('#lb-cap').textContent = `${p.caption}  (${lbAt + 1}/${lbList.length})`;
+      $('#lb-prev').disabled = lbAt === 0;
+      $('#lb-next').disabled = lbAt === lbList.length - 1;
+    }
+    function lbStep(d) { lbAt = Math.min(Math.max(lbAt + d, 0), lbList.length - 1); lbShow(); }
+    $('#lb-prev').onclick = () => lbStep(-1);
+    $('#lb-next').onclick = () => lbStep(1);
+
+    // Every photo of an event, whole pictures first, then close-ups.
+    function eventPhotos(ev, name) {
+      const out = [];
+      (ev.meta.photos || []).forEach((shot, i) => {
+        const when = clock(shot.ts || ev.ts);
+        out.push({src: '/photos/' + shot.full, caption: `${name} - ${when}`});
+        (shot.crops || []).forEach((c, j) =>
+          out.push({src: '/photos/' + c, caption: `${name} - ${when} - person ${j + 1}`}));
+      });
+      return out;
+    }
+    function eventThumb(ev) {
+      const shot = (ev.meta.photos || [])[0];
+      if (!shot) return '';
+      return '/photos/' + ((shot.crops && shot.crops[0]) || shot.full);
+    }
+
+    // ------------------------------------------------------------ toasts
+    function toast({title, body, img, kind, onclick}) {
+      const el = document.createElement('div');
+      el.className = 'toast ' + (kind || '');
+      el.innerHTML = (img ? `<img src="${esc(img)}" alt="">` : '') +
+        `<div><b>${esc(title)}</b><span>${esc(body)}</span></div>` +
+        `<button class="x" aria-label="Dismiss">&times;</button>`;
+      el.onclick = (e) => {
+        if (e.target.closest('.x')) { el.remove(); return; }
+        if (onclick) onclick();
+        el.remove();
+      };
+      $('#toasts').prepend(el);
+      setTimeout(() => el.remove(), 20000);
+    }
+
+    // ------------------------------------------------------------ polling
+    // The sidebar and the alarm are on every page, so the status is polled
+    // here once and handed to the page through onStatus().
+    window.onStatus = null;
+    let names = {};
+    let lastStatus = null;
+    let seenAlert = null;      // newest alert id this page already knows about
+    async function newAlerts(latest) {
+      if (seenAlert === null) { seenAlert = latest; return; }
+      if (latest <= seenAlert) return;
+      const from = seenAlert;
+      seenAlert = latest;
+      const {alerts} = await api('/api/alerts?limit=10');
+      alerts.filter(a => a.id > from).reverse().forEach(a => {
+        const name = names[a.camera] || a.camera;
+        toast({
+          kind: 'alert', title: 'Restricted area - ' + name,
+          body: `${a.label} at ${clock(a.ts)}`, img: eventThumb(a),
+          onclick: () => openPhotos(eventPhotos(a, name), 0),
+        });
+      });
+      beep(3);
+    }
+
+    async function poll() {
+      let s;
+      try { s = await api('/api/status'); } catch (e) {
+        $('#engine').textContent = 'Server not reachable';
+        return;
+      }
+      lastStatus = s;
+      names = {};
+      Object.values(s.cameras).forEach(c => names[c.id] = c.name);
+
+      const n = (s.alerting || []).length;
+      $('#alert-badge').hidden = n === 0;
+      $('#alert-badge').textContent = n || '';
+      $('#phone-badge').hidden = !s.on_phone_total;
+      $('#phone-badge').textContent = s.on_phone_total || '';
+      document.title = n ? `(${n}) ALERT - ${pageTitle}` : pageTitle;
+
+      const d = s.detection;
+      $('#engine').textContent =
+        d.state === 'running' ? `Detection: ${d.perf.per_second}/s on ${d.device}`
+        : d.state === 'loading' ? 'Detection: loading model...'
+        : d.state === 'error' ? 'Detection error' : 'Detection: off';
+
+      newAlerts(s.latest_alert).catch(() => {});
+      paintLive(s);
+      if (window.onStatus) window.onStatus(s);
+    }
+    poll();
+    setInterval(poll, 1500);
+  </script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,261 @@
+{% extends "base.html" %}
+{% block title %}Camera running time{% endblock %}
+
+{% block body %}
+<h1>Camera running time</h1>
+<p class="sub">How many hours each camera was running and how many it was off.
+   The app checks every camera every 10 seconds. Each finished day is saved as a
+   daily record that is kept for good; the hour-by-hour detail is kept 90 days.
+   Time when the app itself was closed shows as <i>app not running</i> - nobody
+   could see the cameras then.</p>
+
+<div class="actions">
+  <div class="chips" id="range">
+    <button class="on" data-r="today">Today</button>
+    <button data-r="yesterday">Yesterday</button>
+    <button data-r="7">Last 7 days</button>
+    <button data-r="30">Last 30 days</button>
+  </div>
+  <label class="inline">Day <input type="date" class="date" id="day"></label>
+  <label class="inline">Sort
+    <select class="date" id="sort">
+      <option value="name">Camera</option>
+      <option value="off">Most hours off first</option>
+      <option value="pct">Lowest running % first</option>
+    </select>
+  </label>
+  <a class="csv" id="csv" href="/api/running-time.csv">Download CSV</a>
+</div>
+
+<div class="stats four">
+  <div class="stat">
+    <div class="stat-k">Cameras watched</div>
+    <div class="stat-n" id="u-cams">-</div>
+    <div class="stat-sub" id="u-cams-sub">&nbsp;</div>
+  </div>
+  <div class="stat">
+    <div class="stat-k">Average running</div>
+    <div class="stat-n" id="u-pct">-</div>
+    <div class="stat-sub" id="u-pct-sub">&nbsp;</div>
+  </div>
+  <div class="stat">
+    <div class="stat-k">Hours off, all cameras</div>
+    <div class="stat-n" id="u-off">-</div>
+    <div class="stat-sub" id="u-off-sub">&nbsp;</div>
+  </div>
+  <div class="stat">
+    <div class="stat-k">Stream drops</div>
+    <div class="stat-n" id="u-drops">-</div>
+    <div class="stat-sub">times a camera's video was lost</div>
+  </div>
+</div>
+
+<div class="card flush">
+  <table class="records uptime">
+    <thead>
+      <tr><th>Camera</th><th>Purpose</th><th>Now</th><th class="num">Running</th>
+          <th class="num">Off</th><th class="num">App not running</th><th>Running %</th>
+          <th class="num">Drops</th><th>Last running</th><th class="tl">Hour by hour</th></tr>
+    </thead>
+    <tbody id="rows"><tr><td colspan="10" class="empty">Loading&hellip;</td></tr></tbody>
+  </table>
+</div>
+<p class="hint legend" id="legend">
+  <i class="g"></i> running all hour <i class="a"></i> off part of the hour
+  <i class="r"></i> off all hour <i></i> no record
+</p>
+
+<section class="card daily" id="daily">
+  <div class="card-head">
+    <h2>Daily records</h2>
+    <label class="inline">Camera <select class="date" id="d-cam"><option value="">All cameras</option></select></label>
+    <label class="inline">Show
+      <select class="date" id="d-days">
+        <option value="7">Last 7 days</option>
+        <option value="30" selected>Last 30 days</option>
+        <option value="90">Last 90 days</option>
+        <option value="365">Last year</option>
+        <option value="3660">Everything</option>
+      </select>
+    </label>
+    <a class="csv" id="d-csv" href="/api/running-time/days.csv">Download CSV</a>
+  </div>
+  <p class="hint">Saved after midnight for every finished day and kept for good.
+     Today's row is still counting.</p>
+  <table class="records">
+    <thead id="d-head"></thead>
+    <tbody id="d-rows"><tr><td class="empty">Loading&hellip;</td></tr></tbody>
+  </table>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const NAMES = {count: 'Counting', restricted: 'Restricted'};
+let range = 'today', report = null;
+$('#day').max = today();
+$('#day').value = today();
+
+function fmtH(sec) {
+  sec = Math.max(0, Math.round(sec || 0));
+  const h = Math.floor(sec / 3600), m = Math.round((sec % 3600) / 60);
+  if (!h) return `${m} m`;
+  return m === 60 ? `${h + 1} h` : `${h} h ${String(m).padStart(2, '0')} m`;
+}
+function dayMinus(iso, n) {
+  const d = new Date(iso + 'T12:00:00');
+  d.setDate(d.getDate() - n);
+  return d.toISOString().slice(0, 10);
+}
+function query() {
+  const day = $('#day').value || today();
+  if (range === 'today' || range === 'yesterday' || range === 'day') return `day=${day}`;
+  return `day=${day}&days=${range}`;
+}
+function stateText(c) {
+  return c.state === 'connected' ? 'running' : c.state === 'connecting' ? 'connecting'
+       : c.state === 'off' ? 'no IP set' : 'off';
+}
+
+async function load() {
+  const q = query();
+  $('#csv').href = '/api/running-time.csv?' + q;
+  report = await api('/api/running-time?' + q);
+  paint();
+}
+
+function paint() {
+  const r = report;
+  if (!r) return;
+  const single = r.days === 1;
+  const isToday = r.last === today();
+  const nowH = new Date().getHours();
+  const watched = r.cameras.filter(c => c.online + c.offline > 0);
+  const on = watched.reduce((a, c) => a + c.online, 0), off = watched.reduce((a, c) => a + c.offline, 0);
+  const offNow = r.cameras.filter(c => c.state !== 'connected' && c.state !== 'off').length;
+
+  $('#u-cams').textContent = watched.length;
+  $('#u-cams-sub').textContent = offNow ? `${offNow} off right now` : 'all running right now';
+  $('#u-pct').textContent = on + off ? `${(100 * on / (on + off)).toFixed(1)}%` : '-';
+  $('#u-pct-sub').textContent = r.days === 1 ? (isToday ? 'today so far' : r.last)
+                                             : `${r.first} to ${r.last}`;
+  $('#u-off').textContent = fmtH(off);
+  const worst = [...watched].sort((a, b) => b.offline - a.offline)[0];
+  $('#u-off-sub').textContent = worst && worst.offline > 60 ? `most: ${worst.name} (${fmtH(worst.offline)})` : 'none worth noting';
+  $('#u-drops').textContent = watched.reduce((a, c) => a + c.drops, 0);
+
+  const pct = c => c.online + c.offline ? c.online / (c.online + c.offline) : 2;
+  const cams = [...r.cameras];
+  const sort = $('#sort').value;
+  if (sort === 'off') cams.sort((a, b) => b.offline - a.offline);
+  if (sort === 'pct') cams.sort((a, b) => pct(a) - pct(b));
+
+  $$('.uptime .tl').forEach(th => th.hidden = !single);
+  $('#legend').hidden = !single;
+  $('#rows').innerHTML = cams.map(c => {
+    const seen = c.online + c.offline;
+    const notRun = Math.max(0, r.period - seen);
+    const p = seen ? 100 * c.online / seen : null;
+    let strip = '';
+    if (single) {
+      for (let h = 0; h < 24; h++) {
+        const v = c.hours[h] || c.hours[String(h)];
+        const t = v ? v[0] + v[1] : 0;
+        let cls = '';
+        if (t >= 30) cls = v[0] / t >= 0.98 ? 'g' : v[0] / t <= 0.02 ? 'r' : 'a';
+        else if (isToday && h > nowH) cls = 'f';
+        const tip = v && t >= 30 ? `${h}:00-${h + 1}:00 · running ${fmtH(v[0])}, off ${fmtH(v[1])}`
+                                 : `${h}:00 · no record`;
+        strip += `<i class="${cls}" title="${tip}"></i>`;
+      }
+    }
+    const last = c.last_online ? (c.last_online.slice(0, 10) === today()
+      ? c.last_online.slice(11, 16) : c.last_online.slice(0, 16).replace('T', ' ')) : '-';
+    return `<tr class="${c.state !== 'connected' && c.state !== 'off' ? 'down' : ''}">` +
+      `<td><b>${esc(c.name)}</b><div class="ip">${esc(c.ip || '')}</div></td>` +
+      `<td>${NAMES[c.group] || c.group}</td>` +
+      `<td><span class="dot ${c.state}"></span>${stateText(c)}</td>` +
+      `<td class="num">${seen ? fmtH(c.online) : '-'}</td>` +
+      `<td class="num ${c.offline >= 60 ? 'bad' : ''}">${seen ? fmtH(c.offline) : '-'}</td>` +
+      `<td class="num muted">${fmtH(notRun)}</td>` +
+      `<td>${p == null ? '<span class="muted">no record</span>' :
+        `<span class="ubar"><i style="width:${p.toFixed(1)}%"></i></span>${p >= 99.95 ? 100 : p.toFixed(1)}%`}</td>` +
+      `<td class="num">${c.drops}</td>` +
+      `<td>${last}</td>` +
+      (single ? `<td class="tl"><div class="strip">${strip}</div></td>` : '') + '</tr>';
+  }).join('') || '<tr><td colspan="10" class="empty">No cameras yet.</td></tr>';
+}
+
+$$('#range button').forEach(b => b.onclick = () => {
+  range = b.dataset.r;
+  $$('#range button').forEach(x => x.classList.toggle('on', x === b));
+  $('#day').value = range === 'yesterday' ? dayMinus(today(), 1) : today();
+  load();
+});
+$('#day').onchange = () => {
+  range = 'day';
+  $$('#range button').forEach(x => x.classList.toggle('on',
+    x.dataset.r === 'today' && $('#day').value === today()));
+  load();
+};
+$('#sort').onchange = paint;
+
+// ------------------------------------------------------------ daily records
+function pctText(run, off) {
+  const seen = run + off;
+  if (!seen) return '<span class="muted">no record</span>';
+  const p = 100 * run / seen;
+  return `<span class="ubar"><i style="width:${p.toFixed(1)}%"></i></span>${p >= 99.95 ? 100 : p.toFixed(1)}%`;
+}
+function dayText(r) {
+  const d = new Date(r.day + 'T12:00:00').toLocaleDateString(undefined,
+    {weekday: 'short', day: 'numeric', month: 'short', year: 'numeric'});
+  return r.today ? `<b>${d}</b> <span class="tag green">today so far</span>` : d;
+}
+
+async function loadDaily() {
+  const cam = $('#d-cam').value, q = `days=${$('#d-days').value}` + (cam ? `&camera=${encodeURIComponent(cam)}` : '');
+  $('#d-csv').href = '/api/running-time/days.csv?' + q;
+  const r = await api('/api/running-time/days?' + q);
+  if (cam) {
+    $('#d-head').innerHTML = '<tr><th>Day</th><th class="num">Running</th><th class="num">Off</th>' +
+      '<th class="num">App not running</th><th>Running %</th><th class="num">Drops</th><th>Last running</th></tr>';
+    $('#d-rows').innerHTML = r.rows.map(d => `<tr><td>${dayText(d)}</td>` +
+      `<td class="num">${fmtH(d.running)}</td>` +
+      `<td class="num ${d.off >= 60 ? 'bad' : ''}">${fmtH(d.off)}</td>` +
+      `<td class="num muted">${fmtH(d.not_watched)}</td>` +
+      `<td>${pctText(d.running, d.off)}</td><td class="num">${d.drops}</td>` +
+      `<td>${d.last_online ? d.last_online.slice(11, 16) : '-'}</td></tr>`).join('') ||
+      '<tr><td colspan="7" class="empty">No records for this camera yet.</td></tr>';
+  } else {
+    $('#d-head').innerHTML = '<tr><th>Day</th><th class="num">Cameras</th><th class="num">Running, all</th>' +
+      '<th class="num">Off, all</th><th>Running %</th><th>Off the longest</th><th class="num">Drops</th><th></th></tr>';
+    $('#d-rows').innerHTML = r.rows.map(d => `<tr><td>${dayText(d)}</td>` +
+      `<td class="num">${d.cameras}</td><td class="num">${fmtH(d.running)}</td>` +
+      `<td class="num ${d.off >= 60 ? 'bad' : ''}">${fmtH(d.off)}</td>` +
+      `<td>${pctText(d.running, d.off)}</td>` +
+      `<td>${d.worst ? `${esc(d.worst.name)} <span class="muted">(${fmtH(d.worst.off)})</span>` : '<span class="muted">none</span>'}</td>` +
+      `<td class="num">${d.drops}</td>` +
+      `<td><button class="ghost sm" data-day="${d.day}">Each camera</button></td></tr>`).join('') ||
+      '<tr><td colspan="8" class="empty">No records yet.</td></tr>';
+    $$('#d-rows [data-day]').forEach(b => b.onclick = () => {
+      $('#day').value = b.dataset.day;
+      $('#day').onchange();
+      scrollTo({top: 0, behavior: 'smooth'});
+    });
+  }
+}
+$('#d-cam').onchange = $('#d-days').onchange = () => loadDaily();
+
+async function fillCameras() {
+  const r = report || await api('/api/running-time');
+  $('#d-cam').innerHTML = '<option value="">All cameras</option>' + r.cameras.map(c =>
+    `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('');
+}
+
+load().then(fillCameras);
+loadDaily();
+setInterval(loadDaily, 60000);
+setInterval(() => { if ($('#day').value === today()) load(); }, 60000);
+</script>
+{% endblock %}

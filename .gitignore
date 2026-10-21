@@ -1,0 +1,9 @@
+# Office data: camera links, events, photos of people, training frames.
+data/
+# Models download themselves on first start (Ultralytics releases).
+*.pt
+runs/
+*.log
+.claude/
+__pycache__/
+*.pyc

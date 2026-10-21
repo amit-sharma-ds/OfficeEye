@@ -1,0 +1,149 @@
+{% extends "base.html" %}
+{% block title %}Cameras{% endblock %}
+
+{% block body %}
+<h1>Cameras</h1>
+<p class="sub">Every camera in one list. Type the IP and press <b>Save</b> - the
+   app switches over straight away, no restart. <b>Purpose</b> decides what a
+   camera is for: <i>Counting</i> (people and phone use) or <i>Restricted</i>
+   (alert when anybody enters). The login and stream path are copied from a
+   camera that already works, so usually only the IP needs typing.</p>
+
+{% with add_label='Add camera' %}{% include "_scan.html" %}{% endwith %}
+
+<p class="summary" id="summary"></p>
+
+<div class="card flush">
+  <table class="cams">
+    <thead>
+      <tr><th>Name</th><th>IP address</th><th>Purpose</th><th>Status</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for cam in cameras %}
+      <tr class="cam-row" data-id="{{ cam.id }}">
+        <td><input class="name" value="{{ cam.name }}" aria-label="Name"></td>
+        <td><input class="ip" value="{{ cam.ip }}" placeholder="192.168.1.187" aria-label="IP address"></td>
+        <td>
+          <select class="group" aria-label="Purpose">
+            <option value="count" {{ 'selected' if cam.group == 'count' }}>Counting</option>
+            <option value="restricted" {{ 'selected' if cam.group == 'restricted' }}>Restricted</option>
+          </select>
+        </td>
+        <td class="state"><span class="dot off"></span><span class="text">checking...</span></td>
+        <td class="acts">
+          <button class="primary sm save">Save</button>
+          <button class="ghost sm more" aria-label="More options" title="More">&hellip;</button>
+        </td>
+      </tr>
+      <tr class="adv" data-for="{{ cam.id }}" hidden>
+        <td colspan="5">
+          <div class="row">
+            <div class="field grow">
+              <label>Full RTSP link (advanced - *** = saved password)</label>
+              <input class="url" value="{{ cam.url }}"
+                     placeholder="rtsp://admin:password@192.168.1.187:554/stream1">
+            </div>
+            <button class="ghost ignore">Ignore areas</button>
+            <button class="ghost reset">Reset</button>
+            <button class="danger remove">Remove</button>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+      {% if not cameras %}
+      <tr><td colspan="5" class="empty">No cameras yet - press <b>Scan network</b> to find them, or <b>+ Add camera</b>.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function paint(row, st) {
+  const state = (st && st.state) || 'off';
+  $('.dot', row).className = 'dot ' + state;
+  const t = $('.text', row);
+  if (state === 'connected')
+    t.textContent = `${st.width}x${st.height} · ${st.fps} fps` +
+                    (st.mode === 'full' ? ' · every frame' : ' · keyframes');
+  else if (state === 'connecting') t.textContent = 'Connecting...';
+  else if (state === 'off')        t.textContent = 'Not set - enter the IP';
+  else                             t.textContent = st.error || 'Not connected';
+  t.title = t.textContent;
+}
+
+$$('.cam-row').forEach(row => {
+  const id = row.dataset.id;
+  const adv = $(`.adv[data-for="${CSS.escape(id)}"]`);
+  const ip = $('.ip', row), name = $('.name', row), group = $('.group', row);
+  const url = $('.url', adv), save = $('.save', row);
+
+  $('.more', row).onclick = () => { adv.hidden = !adv.hidden; };
+  [ip, name].forEach(inp => inp.onkeydown = (e) => { if (e.key === 'Enter') save.click(); });
+
+  save.onclick = async () => {
+    save.disabled = true;
+    save.textContent = 'Connecting...';
+    const r = await post(`/api/cameras/${encodeURIComponent(id)}/save`,
+                         {ip: ip.value, url: url.value, name: name.value, group: group.value});
+    ip.value = r.values.ip || ip.value;
+    url.value = r.values.url || url.value;
+    paint(row, r.status);
+    if (!r.ok) $('.text', row).textContent = r.message;
+    save.textContent = r.ok ? 'Saved' : 'Save';
+    setTimeout(() => { save.textContent = 'Save'; }, 1500);
+    save.disabled = false;
+  };
+
+  $('.ignore', adv).onclick = () => editIgnore(id, name.value);
+
+  $('.reset', adv).onclick = async () => {
+    const r = await post(`/api/cameras/${encodeURIComponent(id)}/reset`);
+    ip.value = r.values.ip; url.value = r.values.url;
+    paint(row, r.status);
+  };
+
+  // Asks on the button itself, not with confirm(): some browsers (the one
+  // inside the Claude app, kiosk screens) answer every pop-up with Cancel.
+  const remove = $('.remove', adv);
+  remove.onclick = async () => {
+    clearTimeout(remove.undoTimer);
+    if (!remove.classList.contains('sure')) {
+      remove.classList.add('sure');
+      remove.textContent = `Click again to remove ${name.value}`;
+      remove.undoTimer = setTimeout(() => {
+        remove.classList.remove('sure');
+        remove.textContent = 'Remove';
+      }, 4000);
+      return;
+    }
+    remove.disabled = true;
+    remove.textContent = 'Removing...';
+    await post(`/api/cameras/${encodeURIComponent(id)}/remove`);
+    location.reload();
+  };
+});
+
+$('#add').onclick = async () => {
+  $('#add').disabled = true;
+  await post('/api/cameras/add', {group: 'count'});
+  location.reload();
+};
+$('#add-r').onclick = async () => {
+  $('#add-r').disabled = true;
+  await post('/api/cameras/add', {group: 'restricted'});
+  location.reload();
+};
+
+window.onStatus = (s) => {
+  const cams = Object.values(s.cameras);
+  const online = cams.filter(c => c.state === 'connected').length;
+  const r = cams.filter(c => c.group === 'restricted').length;
+  $('#summary').textContent = cams.length
+    ? `${plural(cams.length, 'camera')} · ${online} online · ` +
+      `${cams.length - r} counting · ${r} restricted` : '';
+  $$('.cam-row').forEach(row => paint(row, s.cameras[row.dataset.id]));
+};
+</script>
+{% endblock %}

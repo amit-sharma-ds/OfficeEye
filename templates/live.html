@@ -1,0 +1,139 @@
+{% extends "base.html" %}
+{% block title %}Live cameras{% endblock %}
+
+{% block body %}
+<h1>Live cameras</h1>
+<p class="sub">Every camera's latest picture with what it sees - people in view,
+   phones in use, anybody in a restricted area. Click a camera to watch it live.</p>
+
+<div class="wall-head">
+  <div class="chips" id="filters">
+    <button class="on" data-f="all">All <b></b></button>
+    <button data-f="count">Counting <b></b></button>
+    <button data-f="restricted">Restricted <b></b></button>
+    <button data-f="people">People in view <b></b></button>
+    <button data-f="phone">On phone <b></b></button>
+    <button data-f="offline">Offline <b></b></button>
+  </div>
+  <input type="search" id="find" placeholder="Find a camera">
+</div>
+
+{% if cameras %}
+<div class="wall" id="wall">
+  {% for cam in cameras %}
+  <div class="tile {{ 'r' if cam.group == 'restricted' }}" data-id="{{ cam.id }}"
+       data-group="{{ cam.group }}" data-find="{{ (cam.name ~ ' ' ~ cam.ip)|lower }}"
+       tabindex="0" role="button" aria-label="Watch {{ cam.name }} live">
+    <div class="shot">
+      <img alt="">
+      <span class="pill n" hidden></span>
+      <span class="pill ph" hidden></span>
+      {% if cam.group == 'restricted' %}<span class="pill rtag">Restricted</span>{% endif %}
+    </div>
+    <div class="meta">
+      <span class="nm">{{ cam.name }}</span>
+      <span class="st"><span class="dot off"></span><span class="tx">...</span></span>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+<p class="empty" id="none" hidden>No camera matches.</p>
+{% else %}
+<div class="card">
+  <p class="empty">No cameras yet. Add them on the <a href="/cameras">Cameras</a> page
+     - <b>Scan network</b> there finds them all at once.</p>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+const tiles = $$('.tile');
+let filter = 'all', last = null;
+
+// Tiles show the newest checked picture. Only tiles on screen are refreshed,
+// and only when the picture or the result actually changed.
+const onScreen = new Set();
+const io = new IntersectionObserver(es => es.forEach(e =>
+  e.isIntersecting ? onScreen.add(e.target) : onScreen.delete(e.target)), {rootMargin: '200px'});
+tiles.forEach(t => {
+  io.observe(t);
+  t.onclick = () => openLive(t.dataset.id, $('.nm', t).textContent);
+  t.onkeydown = (e) => { if (e.key === 'Enter') t.click(); };
+});
+
+function refreshImage(tile, c) {
+  const img = $('img', tile);
+  const now = Date.now();
+  const key = c.state === 'connected' ? `${c.seq}-${c.ver}` : c.state;
+  const gap = tile.dataset.group === 'restricted' ? 1400 : 1900;
+  if (img.dataset.key === key || now - (+img.dataset.at || 0) < gap) return;
+  if (!onScreen.has(tile) && img.dataset.key) return;
+  img.dataset.key = key;
+  img.dataset.at = now;
+  img.src = `/frame/${encodeURIComponent(tile.dataset.id)}.jpg?w=400&caption=0&k=${encodeURIComponent(key)}`;
+}
+
+function matches(tile, c) {
+  const q = $('#find').value.trim().toLowerCase();
+  if (q && !tile.dataset.find.includes(q)) return false;
+  switch (filter) {
+    case 'count': return c.group === 'count';
+    case 'restricted': return c.group === 'restricted';
+    case 'people': return (c.count || 0) > 0 || !!(c.alert && c.alert.active);
+    case 'phone': return (c.on_phone || 0) > 0;
+    case 'offline': return c.state !== 'connected';
+  }
+  return true;
+}
+
+function paintWall(s) {
+  const counts = {all: 0, count: 0, restricted: 0, people: 0, phone: 0, offline: 0};
+  let shown = 0;
+  tiles.forEach(tile => {
+    const c = s.cameras[tile.dataset.id];
+    if (!c) { tile.hidden = true; return; }
+    counts.all++;
+    counts[c.group]++;
+    if ((c.count || 0) > 0 || (c.alert && c.alert.active)) counts.people++;
+    if ((c.on_phone || 0) > 0) counts.phone++;
+    if (c.state !== 'connected') counts.offline++;
+
+    tile.hidden = !matches(tile, c);
+    if (!tile.hidden) shown++;
+    refreshImage(tile, c);
+
+    const alert = !!(c.alert && c.alert.active);
+    tile.classList.toggle('alert', alert);
+    const n = $('.n', tile), ph = $('.ph', tile);
+    if (c.group === 'restricted') {
+      n.hidden = !alert;
+      n.textContent = alert ? `ALERT - ${c.alert.count}` : '';
+    } else {
+      n.hidden = c.count == null;
+      n.textContent = c.count == null ? '' : plural(c.count, 'person');
+    }
+    ph.hidden = !c.on_phone;
+    ph.textContent = c.on_phone ? `${c.on_phone} on phone` : '';
+
+    $('.dot', tile).className = 'dot ' + c.state;
+    $('.tx', tile).textContent =
+      c.state === 'connected' ? (c.checked_ago != null ? ago(c.checked_ago) : 'waiting')
+      : c.state === 'connecting' ? 'connecting...'
+      : c.state === 'off' ? 'no IP set' : 'offline';
+    tile.title = c.state === 'error' ? c.error : '';
+  });
+  $$('#filters button').forEach(b => { $('b', b).textContent = counts[b.dataset.f]; });
+  if ($('#none')) $('#none').hidden = shown > 0;
+}
+
+$$('#filters button').forEach(b => b.onclick = () => {
+  filter = b.dataset.f;
+  $$('#filters button').forEach(x => x.classList.toggle('on', x === b));
+  if (last) paintWall(last);
+});
+$('#find').oninput = () => { if (last) paintWall(last); };
+
+window.onStatus = (s) => { last = s; paintWall(s); };
+</script>
+{% endblock %}

@@ -1,0 +1,264 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+
+{% block body %}
+{% set rcams = cameras|selectattr('group', 'equalto', 'restricted')|list %}
+{% set ccams = cameras|selectattr('group', 'equalto', 'count')|list %}
+<div class="dash-head">
+  <div>
+    <h1>Office overview</h1>
+    <p class="sub" id="d-live">Live &middot; starting up&hellip;</p>
+  </div>
+  <a class="alert-pill" id="alert-pill" href="/restricted" hidden></a>
+</div>
+
+<div class="stats four">
+  <div class="stat">
+    <div class="stat-k">People now</div>
+    <div class="stat-n" id="s-total">-</div>
+    <div class="stat-sub" id="s-total-sub">starting up&hellip;</div>
+  </div>
+  <div class="stat">
+    <div class="stat-k">On phone now</div>
+    <div class="stat-n" id="s-phone">-</div>
+    <div class="stat-sub" id="s-phone-sub">&nbsp;</div>
+  </div>
+  <a class="stat link" id="s-alerts-card" href="/restricted">
+    <div class="stat-k">Restricted alerts today</div>
+    <div class="stat-n" id="s-alerts">0</div>
+    <div class="stat-sub" id="s-alerts-sub">&nbsp;</div>
+  </a>
+  <a class="stat link" href="/cameras">
+    <div class="stat-k">Cameras online</div>
+    <div class="stat-n" id="s-online">-</div>
+    <div class="stat-sub" id="s-online-sub">&nbsp;</div>
+  </a>
+</div>
+
+<section class="card">
+  <div class="card-head">
+    <h2>Restricted area &middot; {{ rcams|length }} camera{{ '' if rcams|length == 1 else 's' }}</h2>
+    <a href="/restricted">All alerts</a>
+  </div>
+  {% if rcams %}
+  <table class="records">
+    <thead><tr><th>Camera</th><th>Status</th><th>Since / last alert</th><th class="num">Alerts today</th></tr></thead>
+    <tbody>
+      {% for cam in rcams %}
+      <tr data-id="{{ cam.id }}">
+        <td>{{ cam.name }}</td>
+        <td class="st"><span class="tag">...</span></td>
+        <td class="when">-</td>
+        <td class="num n">0</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">No restricted cameras yet. On the <a href="/cameras">Cameras</a> page,
+     set a camera's Purpose to Restricted.</p>
+  {% endif %}
+</section>
+
+<div class="split2">
+  <div class="card">
+    <div class="card-head"><h2>Latest alerts</h2><a href="/restricted">All alerts</a></div>
+    <ul class="feed" id="feed-alerts"><li class="empty">No alerts today.</li></ul>
+  </div>
+  <div class="card">
+    <div class="card-head"><h2>Phone use today</h2><a href="/phone">All photos</a></div>
+    <ul class="feed" id="feed-phone"><li class="empty">Nobody caught on a phone today.</li></ul>
+  </div>
+</div>
+
+<section class="card" id="day-card" hidden>
+  <div class="card-head">
+    <h2>People in the office through the day</h2>
+    <span class="hint-inline">average in view each hour, all counting cameras</span>
+  </div>
+  <div class="hours" id="hours"></div>
+  <div class="hours-x" id="hours-x"></div>
+</section>
+
+<section class="card">
+  <div class="card-head">
+    <h2>People by camera &middot; {{ ccams|length }} counting cameras</h2>
+    <a href="/live">Watch live cameras</a>
+  </div>
+  {% if ccams %}
+  <table class="records">
+    <thead><tr><th>Camera</th><th class="num">People now</th><th class="num">Peak today</th>
+               <th class="num">On phone</th><th>Status</th></tr></thead>
+    <tbody id="by-cam"><tr><td colspan="5" class="empty">Waiting for the first counts&hellip;</td></tr></tbody>
+  </table>
+  <button class="ghost sm more-rows" id="more-rows" hidden></button>
+  {% else %}
+  <p class="empty">No counting cameras yet. Add them on the <a href="/cameras">Cameras</a> page.</p>
+  {% endif %}
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const SHOW = 10;
+let peak = null, showAll = false, alertsBy = {}, last = null;
+
+const hhmm = (sec) => new Date(sec * 1000).toTimeString().slice(0, 5);
+const stateText = (c) => c.state === 'connecting' ? 'connecting...'
+                       : c.state === 'off' ? 'no IP set' : 'offline';
+
+function paintRestricted(s) {
+  $$('.records tr[data-id]').forEach(row => {
+    const c = s.cameras[row.dataset.id];
+    if (!c) return;
+    const a = c.alert || {};
+    const on = c.state === 'connected';
+    const tag = $('.tag', row);
+    tag.className = 'tag ' + (a.active ? 'red' : on && a.watching ? 'green' : 'grey');
+    tag.textContent = a.active ? `ALERT - ${plural(a.count, 'person')} inside`
+                    : !on ? stateText(c) : a.watching ? 'Clear' : 'waiting';
+    row.classList.toggle('hot', !!a.active);
+    const mine = alertsBy[c.id] || [];
+    $('.when', row).textContent = a.active && a.since ? `inside since ${hhmm(a.since)}`
+      : mine.length ? `last alert ${clock(mine[0].ts).slice(0, 5)}` : 'no alerts today';
+    $('.n', row).textContent = mine.length;
+  });
+}
+
+function paintByCamera(s) {
+  const body = $('#by-cam');
+  if (!body) return;
+  const cams = Object.values(s.cameras).filter(c => c.group === 'count')
+    .sort((a, b) => (b.count ?? -1) - (a.count ?? -1) || (b.peak || 0) - (a.peak || 0) ||
+                    a.name.localeCompare(b.name, undefined, {numeric: true}));
+  const rows = showAll ? cams : cams.slice(0, SHOW);
+  body.innerHTML = rows.map(c => {
+    const on = c.state === 'connected';
+    return `<tr><td>${esc(c.name)}</td>` +
+      `<td class="num"><b>${c.count ?? '-'}</b></td>` +
+      `<td class="num">${c.peak ?? '-'}</td>` +
+      `<td class="num ${c.on_phone ? 'warn' : ''}">${c.on_phone ? c.on_phone : on ? 0 : '-'}</td>` +
+      `<td><span class="dot ${c.state}"></span>${on ? (c.checked_ago != null ? 'checked ' + ago(c.checked_ago) : 'waiting') : stateText(c)}</td></tr>`;
+  }).join('') || '<tr><td colspan="5" class="empty">No counting cameras.</td></tr>';
+  const more = $('#more-rows');
+  more.hidden = cams.length <= SHOW;
+  more.textContent = showAll ? 'Show the busiest only' : `Show all ${cams.length} cameras`;
+}
+if ($('#more-rows')) $('#more-rows').onclick = () => { showAll = !showAll; if (last) paintByCamera(last); };
+
+function feedRow(ev, i, text) {
+  const th = eventThumb(ev);
+  return `<li data-i="${i}">` +
+    (th ? `<img src="${esc(th)}" alt="">` : '<span class="noimg"></span>') +
+    `<div><b>${esc(names[ev.camera] || ev.camera)}</b><span>${esc(text)}</span></div>` +
+    `<time>${clock(ev.ts).slice(0, 5)}</time></li>`;
+}
+
+let feedsAt = 0;
+async function paintFeeds() {
+  const [{alerts}, {events}] = await Promise.all([
+    api('/api/alerts?limit=500'), api('/api/phone?limit=6')]);
+  alertsBy = {};
+  alerts.forEach(a => (alertsBy[a.camera] = alertsBy[a.camera] || []).push(a));
+
+  const recent = alerts.slice(0, 6);
+  $('#feed-alerts').innerHTML = recent.length ? recent.map((a, i) => {
+    const m = a.meta || {};
+    const dur = m.ended ? `${m.seconds || 0} s` : 'still inside';
+    return feedRow(a, i, `${plural(m.people || a.value, 'person')} · ${dur}`);
+  }).join('') : '<li class="empty">No alerts today.</li>';
+  $$('#feed-alerts li[data-i]').forEach(li => li.onclick = () => {
+    const a = recent[+li.dataset.i];
+    openPhotos(eventPhotos(a, names[a.camera] || a.camera), 0);
+  });
+
+  $('#feed-phone').innerHTML = events.length ? events.map((e, i) => feedRow(e, i, e.label)).join('')
+    : '<li class="empty">Nobody caught on a phone today.</li>';
+  $$('#feed-phone li[data-i]').forEach(li => li.onclick = () => {
+    const e = events[+li.dataset.i];
+    openPhotos(eventPhotos(e, names[e.camera] || e.camera), 0);
+  });
+  if (last) paintRestricted(last);
+}
+
+// People through the day: one bar per office hour (and any hour with people).
+let dayAt = 0;
+async function paintDay() {
+  const res = await fetch('/api/people/day');
+  if (!res.ok) return;
+  const d = await res.json();
+  peak = d.peak && d.peak.time ? d.peak : null;
+  const byHour = {};
+  d.hours.forEach(h => byHour[h.hour] = h);
+  const from = parseInt(d.open || '9', 10), to = parseInt(d.close || '19', 10);
+  const hrs = d.hours.map(h => h.hour);
+  const first = Math.min(from, ...hrs), lastH = Math.max(to - 1, ...hrs);
+  const nowH = new Date().getHours();
+  const top = Math.max(1, ...d.hours.map(h => h.avg));
+  let bars = '', xs = '';
+  for (let h = first; h <= lastH; h++) {
+    const v = byHour[h];
+    const cls = h === nowH ? 'now' : '';
+    const tip = v ? `${h}:00-${h + 1}:00 · ${v.avg} on average, ${v.most} at most` : `${h}:00 · no data`;
+    bars += `<div class="h ${cls}" title="${tip}"><span class="v">${v ? Math.round(v.avg) : ''}</span>` +
+            `<div class="b" style="height:${v ? Math.max(2, Math.round(v.avg / top * 100)) : 0}%"></div></div>`;
+    xs += `<span>${h}</span>`;
+  }
+  $('#hours').innerHTML = bars;
+  $('#hours-x').innerHTML = xs;
+  $('#day-card').hidden = false;
+}
+
+window.onStatus = (s) => {
+  last = s;
+  const cams = Object.values(s.cameras);
+  const d = s.detection;
+  const running = d.state === 'running';
+
+  const now = new Date();
+  $('#d-live').textContent = 'Live · ' + now.toLocaleDateString(undefined,
+    {weekday: 'short', day: 'numeric', month: 'short'}) + ', ' + now.toTimeString().slice(0, 5) +
+    ' · ' + (running ? `detection checking ${d.perf.per_second} pictures/s`
+             : d.state === 'loading' ? 'loading the detection model...' : 'detection is off');
+
+  $('#s-total').textContent = running ? s.total : '-';
+  $('#s-total-sub').textContent = !running
+    ? (d.state === 'loading' ? 'loading the model...' : 'detection is off')
+    : peak ? `peak today ${peak.value} at ${peak.time}` : `across ${plural(s.reporting, 'camera')}`;
+  const phone = $('#s-phone');
+  phone.textContent = running ? s.on_phone_total : '-';
+  phone.classList.toggle('warn', s.on_phone_total > 0);
+  $('#s-phone-sub').textContent = `${plural(s.phone_today, 'photo')} today`;
+
+  const active = s.alerting.length;
+  $('#s-alerts').textContent = s.alerts_today;
+  $('#s-alerts-card').classList.toggle('hot', active > 0);
+  $('#s-alerts-sub').textContent = active ? `${active} open right now` : 'nobody inside now';
+  const pill = $('#alert-pill');
+  pill.hidden = active === 0;
+  pill.textContent = active ? `${plural(active, 'alert')} open - ` +
+    s.alerting.map(id => names[id] || id).join(', ') : '';
+
+  const online = cams.filter(c => c.state === 'connected');
+  const off = cams.filter(c => c.state !== 'connected');
+  $('#s-online').textContent = `${online.length} / ${cams.length}`;
+  $('#s-online-sub').textContent = off.length
+    ? `offline: ${off.slice(0, 3).map(c => c.name).join(', ')}${off.length > 3 ? ` +${off.length - 3}` : ''}`
+    : 'all connected';
+  $('#s-online-sub').title = off.map(c => `${c.name}: ${stateText(c)}`).join('\n');
+
+  paintRestricted(s);
+  paintByCamera(s);
+
+  if (Date.now() - feedsAt > 8000 || s.latest_alert !== window._la) {
+    window._la = s.latest_alert;
+    feedsAt = Date.now();
+    paintFeeds().catch(() => {});
+  }
+  if (Date.now() - dayAt > 60000) {
+    dayAt = Date.now();
+    paintDay().catch(() => {});
+  }
+};
+</script>
+{% endblock %}

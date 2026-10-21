@@ -1,0 +1,439 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Label review</title>
+<style>
+  :root {
+    --bg: #15171a; --panel: #1e2125; --line: #30353b; --text: #e6e8ea; --muted: #9aa1a9;
+    --person: #22c55e; --phone: #f59e0b; --sel: #ffffff; --ok: #22c55e; --bad: #ef4444; --accent: #3b82f6;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, Segoe UI, sans-serif; }
+  header { position: sticky; top: 0; z-index: 5; display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center;
+           padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 16px; margin: 0 8px 0 0; }
+  .progress { color: var(--muted); }
+  .progress b { color: var(--text); }
+  .bar { width: 160px; height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; }
+  .bar > i { display: block; height: 100%; background: var(--ok); width: 0; }
+  select, button { font: inherit; color: var(--text); background: #2a2f35; border: 1px solid var(--line);
+                   border-radius: 6px; padding: 5px 10px; }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--muted); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.ok { background: #15803d; border-color: #15803d; color: #fff; }
+  button.warn { background: #3a2323; border-color: #7f1d1d; }
+  .spacer { flex: 1; }
+  main { padding: 16px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
+  .tile { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .tile.ok { border-color: #166534; }
+  .tile.excluded { opacity: .5; }
+  .shot { position: relative; cursor: pointer; aspect-ratio: 4 / 3; background: #000; }
+  .shot img { width: 100%; height: 100%; display: block; }
+  .shot .b { position: absolute; border: 2px solid var(--person); pointer-events: none; }
+  .shot .b.phone { border-color: var(--phone); }
+  .shot .b.unsure { border-style: dashed; }
+  .meta { display: flex; gap: 8px; align-items: center; padding: 6px 8px; font-size: 13px; }
+  .meta .who { flex: 1; color: var(--muted); }
+  .chip { font-size: 12px; padding: 1px 7px; border-radius: 10px; background: var(--line); }
+  .chip.ok { background: #14532d; }
+  .chip.excluded { background: #7f1d1d; }
+  .pager { display: flex; gap: 8px; align-items: center; justify-content: center; margin: 18px 0 6px; flex-wrap: wrap; }
+  .empty { color: var(--muted); padding: 40px; text-align: center; }
+  /* editor */
+  .editor { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 16px; align-items: start; }
+  @media (max-width: 900px) { .editor { grid-template-columns: 1fr; } }
+  .stage { position: relative; background: #000; border-radius: 6px; overflow: hidden; user-select: none; }
+  canvas { display: block; width: 100%; touch-action: none; }
+  .side { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+  .side h2 { font-size: 15px; margin: 0 0 2px; }
+  .side .sub { color: var(--muted); margin-bottom: 10px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+  .row button { flex: 1; }
+  .cls { display: flex; gap: 6px; }
+  .cls button.on { outline: 2px solid var(--sel); }
+  .list { max-height: 260px; overflow: auto; margin: 6px 0; border-top: 1px solid var(--line); }
+  .list div { display: flex; gap: 8px; align-items: center; padding: 4px 2px; border-bottom: 1px solid var(--line); cursor: pointer; }
+  .list div.sel { background: #2a2f35; }
+  .dot { width: 10px; height: 10px; border-radius: 2px; background: var(--person); }
+  .dot.phone { background: var(--phone); }
+  .list .s { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .keys { color: var(--muted); font-size: 12.5px; margin-top: 10px; }
+  .keys kbd { background: #2a2f35; border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; font: 12px ui-monospace, monospace; color: var(--text); }
+  .flash { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: #111; border: 1px solid var(--line);
+           padding: 8px 14px; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; }
+  .flash.on { opacity: 1; }
+  dialog { max-width: 640px; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 10px; }
+  dialog li { margin: 6px 0; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Label review</h1>
+  <div class="bar"><i id="bar"></i></div>
+  <div class="progress" id="progress">loading...</div>
+  <div class="spacer"></div>
+  <label>Camera <select id="fCam"><option value="">All</option></select></label>
+  <label>Show <select id="fStatus">
+    <option value="todo">To check</option>
+    <option value="ok">Checked</option>
+    <option value="excluded">Excluded</option>
+    <option value="">All</option>
+  </select></label>
+  <button id="guideBtn">How to label</button>
+</header>
+
+<main>
+  <section id="sheet">
+    <div class="grid" id="grid"></div>
+    <div class="pager" id="pager"></div>
+  </section>
+
+  <section id="edit" class="hidden">
+    <div class="editor">
+      <div class="stage"><canvas id="cv" width="1280" height="960"></canvas></div>
+      <div class="side">
+        <h2 id="eTitle"></h2>
+        <div class="sub" id="eSub"></div>
+        <div class="row">
+          <button class="ok" id="bSave" title="Enter">Correct - save &amp; next</button>
+        </div>
+        <div class="row">
+          <button id="bPrev" title="Left arrow">&larr; Prev</button>
+          <button id="bNext" title="Right arrow">Skip &rarr;</button>
+          <button id="bSheet" title="Esc">Sheet</button>
+        </div>
+        <div>New boxes are:</div>
+        <div class="cls">
+          <button id="cPerson" class="on">1 Person</button>
+          <button id="cPhone">2 Phone</button>
+        </div>
+        <div class="list" id="boxList"></div>
+        <div class="row">
+          <button id="bDel" title="Delete">Delete box</button>
+          <button id="bUnsure" title="U">Delete dashed</button>
+        </div>
+        <div class="row">
+          <button class="warn" id="bExclude" title="X">Exclude frame</button>
+          <button id="bUndo" title="Ctrl+Z">Undo</button>
+        </div>
+        <div class="keys">
+          Drag on the picture to draw a box. Click a box to pick it, drag to move, drag a corner to resize.<br>
+          <kbd>1</kbd>/<kbd>2</kbd> person / phone &middot; <kbd>Del</kbd> delete &middot; <kbd>Tab</kbd> next box &middot;
+          <kbd>H</kbd> hide boxes &middot; <kbd>U</kbd> delete dashed &middot; <kbd>Ctrl+Z</kbd> undo &middot;
+          <kbd>Enter</kbd> correct &amp; next &middot; <kbd>&larr;</kbd>/<kbd>&rarr;</kbd> prev / skip &middot;
+          <kbd>X</kbd> exclude &middot; <kbd>Esc</kbd> sheet
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<dialog id="guide">
+  <h3>How to label</h3>
+  <ol>
+    <li><b>Box every real person you can see</b> - standing, sitting, seen from straight above, partly hidden
+      behind a monitor, a desk or another person. If only a head and shoulders show, box what shows.</li>
+    <li><b>One box per person.</b> Delete the extras: a second box on the same person, a small box on just the
+      head inside a body box, one box spanning two people (draw two instead).</li>
+    <li><b>Not a person:</b> pictures and posters (the printed woman on the carton in Camera 3), reflections in
+      glass, empty chairs, a coat on a chair. Delete those boxes - the model learns from that too.</li>
+    <li><b>Phone</b> (orange, key <kbd>2</kbd>): a mobile phone you can tell is a phone - in a hand, at an ear,
+      on a desk. Skip it if you can't tell.</li>
+    <li>Boxes go snug around the visible part. <b>Dashed boxes</b> are guesses the model was unsure about
+      (score under 0.35) - those need the closest look.</li>
+    <li>Grey areas are the app's ignore areas. Still box real people inside them.</li>
+    <li><b>Exclude</b> (<kbd>X</kbd>) a broken frame: grey, smeared or half decoded.</li>
+    <li>On the sheet, <b>Correct</b> under a picture saves it as it is. Only use it when every box is right and
+      nobody is missing.</li>
+  </ol>
+  <form method="dialog"><button class="primary">Got it</button></form>
+</dialog>
+
+<div class="flash" id="flash"></div>
+
+<script>
+const UNSURE = 0.35, PAGE = 24;
+const CLASS = { person: 0, phone: 67 };
+const $ = id => document.getElementById(id);
+let frames = [], cams = {}, page = 0;
+let ed = null;          // editor state
+
+function flash(t) { const f = $("flash"); f.textContent = t; f.classList.add("on");
+  clearTimeout(flash.t); flash.t = setTimeout(() => f.classList.remove("on"), 1400); }
+// Asks by wanting the same action twice within 4 s, not with confirm(): the
+// browser inside the Claude app answers every pop-up with Cancel.
+function twice(key, question) {
+  if (twice.key === key && Date.now() - twice.at < 4000) { twice.key = null; return true; }
+  twice.key = key; twice.at = Date.now();
+  flash(question);
+  clearTimeout(flash.t); flash.t = setTimeout(() => $("flash").classList.remove("on"), 4000);
+  return false;
+}
+
+async function load() {
+  const r = await fetch("/api/frames").then(r => r.json());
+  frames = r.frames; cams = r.cameras;
+  const sel = $("fCam"), have = new Set(frames.map(f => f.cam)), cur = sel.value;
+  sel.innerHTML = '<option value="">All</option>' + [...have].sort((a, b) =>
+    (+a.replace(/\D/g, "")) - (+b.replace(/\D/g, ""))).map(c =>
+    `<option value="${c}">${camName(c)} (${frames.filter(f => f.cam === c).length})</option>`).join("");
+  sel.value = cur;
+  progress();
+}
+function camName(c) { return (cams[c] && cams[c].name) || c; }
+function progress() {
+  const ok = frames.filter(f => f.status === "ok").length, ex = frames.filter(f => f.status === "excluded").length;
+  $("progress").innerHTML = `<b>${ok}</b> / ${frames.length - ex} checked &middot; ${ex} excluded`;
+  $("bar").style.width = (frames.length ? 100 * (ok + ex) / frames.length : 0) + "%";
+}
+function filtered() {
+  const cam = $("fCam").value, st = $("fStatus").value;
+  return frames.filter(f => (!cam || f.cam === cam) &&
+    (st === "" || (st === "todo" ? !f.status : f.status === st)));
+}
+function isUnsure(f, b) { return f.status !== "ok" && b.score !== undefined && b.score < UNSURE; }
+function hhmm(t) { return t ? t.slice(5, 16).replace("T", " ") : ""; }
+function counts(f) {
+  const p = f.boxes.filter(b => b.cls === 0).length, m = f.boxes.filter(b => b.cls === 67).length;
+  return `${p} ${p === 1 ? "person" : "people"}` + (m ? ` &middot; ${m} phone${m > 1 ? "s" : ""}` : "");
+}
+
+// ------------------------------------------------------------ sheet
+function renderSheet() {
+  const list = filtered(), pages = Math.max(1, Math.ceil(list.length / PAGE));
+  page = Math.min(page, pages - 1);
+  const shown = list.slice(page * PAGE, page * PAGE + PAGE);
+  $("grid").innerHTML = shown.length ? shown.map(f => `
+    <div class="tile ${f.status}" data-name="${f.name}">
+      <div class="shot">
+        <img loading="lazy" src="/img/${f.name}.jpg" alt="">
+        ${f.status === "excluded" ? "" : f.boxes.map(b => `<div class="b ${b.cls === 67 ? "phone" : ""} ${isUnsure(f, b) ? "unsure" : ""}"
+          style="left:${(b.cx - b.w / 2) * 100}%;top:${(b.cy - b.h / 2) * 100}%;width:${b.w * 100}%;height:${b.h * 100}%"></div>`).join("")}
+      </div>
+      <div class="meta">
+        <span class="who">${camName(f.cam)} &middot; ${hhmm(f.time)}<br>${counts(f)}</span>
+        ${f.status ? `<span class="chip ${f.status}">${f.status === "ok" ? "checked" : "excluded"}</span>` : ""}
+        ${f.status !== "ok" ? `<button class="ok" data-ok="${f.name}">Correct</button>` : ""}
+      </div>
+    </div>`).join("") : `<div class="empty">Nothing here. ${$("fStatus").value === "todo" ? "Every frame in this view is checked." : ""}</div>`;
+  const todo = shown.filter(f => !f.status).length;
+  $("pager").innerHTML = list.length ? `
+    <button ${page ? "" : "disabled"} id="pPrev">&larr;</button>
+    <span>page ${page + 1} / ${pages} &middot; ${list.length} frames</span>
+    <button ${page < pages - 1 ? "" : "disabled"} id="pNext">&rarr;</button>
+    ${todo ? `<button class="ok" id="pAll">All ${todo} unchecked on this page are correct</button>` : ""}` : "";
+  if ($("pPrev")) $("pPrev").onclick = () => { page--; renderSheet(); scrollTo(0, 0); };
+  if ($("pNext")) $("pNext").onclick = () => { page++; renderSheet(); scrollTo(0, 0); };
+  if ($("pAll")) $("pAll").onclick = async () => {
+    if (!twice("all" + page, `Every box right and nobody missing on all ${todo}? Press again to mark them checked.`)) return;
+    for (const f of shown.filter(f => !f.status)) await saveFrame(f, f.boxes, "ok");
+    renderSheet();
+  };
+}
+$("grid").addEventListener("click", async e => {
+  const okBtn = e.target.closest("[data-ok]");
+  if (okBtn) { const f = frames.find(f => f.name === okBtn.dataset.ok); await saveFrame(f, f.boxes, "ok"); renderSheet(); return; }
+  const tile = e.target.closest(".tile");
+  if (tile) openEditor(filtered().map(f => f.name), tile.dataset.name);
+});
+$("fCam").onchange = $("fStatus").onchange = () => { page = 0; renderSheet(); };
+
+async function saveFrame(f, boxes, status) {
+  const r = await fetch(`/api/label/${f.name}`, { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ boxes: boxes.map(({ cls, cx, cy, w, h }) => ({ cls, cx, cy, w, h })), status }) });
+  if (!r.ok) { flash("Could not save - is review.py still running?"); throw new Error("save"); }
+  const j = await r.json();
+  f.boxes = j.boxes; f.status = j.status;
+  progress();
+}
+
+// ------------------------------------------------------------ editor
+const cv = $("cv"), ctx = cv.getContext("2d");
+const image = new Image();
+
+function openEditor(names, name) {
+  ed = { names, i: names.indexOf(name), boxes: [], sel: -1, undo: [], dirty: false, hide: false,
+         drawCls: ed ? ed.drawCls : 0, drag: null };
+  $("sheet").classList.add("hidden"); $("edit").classList.remove("hidden");
+  showFrame();
+}
+function cur() { return frames.find(f => f.name === ed.names[ed.i]); }
+function showFrame() {
+  const f = cur();
+  ed.boxes = f.boxes.map(b => ({ ...b })); ed.sel = -1; ed.undo = []; ed.dirty = false;
+  $("eTitle").textContent = `${camName(f.cam)} - ${hhmm(f.time)}`;
+  $("eSub").textContent = `frame ${ed.i + 1} of ${ed.names.length}` + (f.status ? ` - ${f.status === "ok" ? "checked" : "excluded"}` : "");
+  image.onload = () => { cv.width = image.naturalWidth * 2; cv.height = image.naturalHeight * 2; draw(); };
+  image.src = `/img/${f.name}.jpg`;
+  scrollTo(0, 0);
+}
+function closeEditor() {
+  if (ed && ed.dirty && !twice("leave", "Changes not saved - press again to leave anyway, or Enter to save")) return;
+  ed = { drawCls: ed ? ed.drawCls : 0 };
+  $("edit").classList.add("hidden"); $("sheet").classList.remove("hidden");
+  renderSheet();
+}
+async function go(step) {
+  if (ed.dirty && !twice("go" + step, "Changes not saved - press again to skip anyway, or Enter to save")) return;
+  const n = ed.i + step;
+  if (n < 0) { flash("First frame"); return; }
+  if (n >= ed.names.length) { flash("That was the last frame in this view"); closeEditor(); return; }
+  ed.i = n; showFrame();
+}
+async function saveAndNext(status) {
+  await saveFrame(cur(), ed.boxes, status);
+  ed.dirty = false;
+  flash(status === "ok" ? "Saved" : "Excluded");
+  go(1);
+}
+
+function snapshot() { ed.undo.push(JSON.stringify(ed.boxes)); if (ed.undo.length > 100) ed.undo.shift(); ed.dirty = true; }
+function xyxy(b) { return [b.cx - b.w / 2, b.cy - b.h / 2, b.cx + b.w / 2, b.cy + b.h / 2]; }
+function fromXyxy(b, x1, y1, x2, y2) {
+  const a = Math.max(0, Math.min(x1, x2)), c = Math.min(1, Math.max(x1, x2));
+  const t = Math.max(0, Math.min(y1, y2)), d = Math.min(1, Math.max(y1, y2));
+  b.cx = (a + c) / 2; b.cy = (t + d) / 2; b.w = c - a; b.h = d - t; delete b.score;
+}
+
+function draw() {
+  if (!ed.names) return;
+  const W = cv.width, H = cv.height;
+  ctx.drawImage(image, 0, 0, W, H);
+  const f = cur(), cam = cams[f.cam];
+  for (const poly of (cam && cam.ignore) || []) {
+    ctx.beginPath(); poly.forEach(([x, y], k) => k ? ctx.lineTo(x * W, y * H) : ctx.moveTo(x * W, y * H));
+    ctx.closePath(); ctx.fillStyle = "rgba(0,0,0,.35)"; ctx.fill();
+    ctx.fillStyle = "#ccc"; ctx.font = "22px system-ui"; ctx.fillText("ignored by the app", poly[0][0] * W + 8, poly[0][1] * H + 26);
+  }
+  if (!ed.hide) ed.boxes.forEach((b, k) => {
+    const [x1, y1, x2, y2] = xyxy(b), sel = k === ed.sel;
+    const col = b.cls === 67 ? "#f59e0b" : "#22c55e";
+    ctx.setLineDash(isUnsure(f, b) ? [12, 8] : []);
+    ctx.lineWidth = sel ? 5 : 3; ctx.strokeStyle = sel ? "#fff" : col;
+    ctx.strokeRect(x1 * W, y1 * H, (x2 - x1) * W, (y2 - y1) * H);
+    ctx.setLineDash([]);
+    const tag = (b.cls === 67 ? "phone" : "person") + (b.score !== undefined ? " " + b.score.toFixed(2) : "");
+    ctx.font = "bold 20px system-ui"; const tw = ctx.measureText(tag).width;
+    ctx.fillStyle = col; ctx.fillRect(x1 * W, Math.max(0, y1 * H - 24), tw + 10, 24);
+    ctx.fillStyle = "#000"; ctx.fillText(tag, x1 * W + 5, Math.max(0, y1 * H - 24) + 18);
+    if (sel) for (const [hx, hy] of [[x1, y1], [x2, y1], [x1, y2], [x2, y2]]) {
+      ctx.fillStyle = "#fff"; ctx.fillRect(hx * W - 7, hy * H - 7, 14, 14);
+    }
+  });
+  if (ed.drag && ed.drag.mode === "new") {
+    const { x0, y0, x, y } = ed.drag;
+    ctx.lineWidth = 3; ctx.strokeStyle = ed.drawCls === 67 ? "#f59e0b" : "#22c55e";
+    ctx.strokeRect(x0 * W, y0 * H, (x - x0) * W, (y - y0) * H);
+  }
+  boxList();
+}
+function boxList() {
+  const f = cur();
+  $("boxList").innerHTML = ed.boxes.map((b, k) => `<div data-k="${k}" class="${k === ed.sel ? "sel" : ""}">
+    <span class="dot ${b.cls === 67 ? "phone" : ""}"></span>${b.cls === 67 ? "phone" : "person"}
+    ${isUnsure(f, b) ? " (unsure)" : ""}
+    <span class="s">${b.score !== undefined ? b.score.toFixed(2) : "edited"}</span></div>`).join("") ||
+    '<div style="cursor:default;color:var(--muted)">no boxes - nobody in the picture?</div>';
+  $("cPerson").classList.toggle("on", ed.drawCls === 0);
+  $("cPhone").classList.toggle("on", ed.drawCls === 67);
+}
+$("boxList").addEventListener("click", e => { const d = e.target.closest("[data-k]"); if (d) { ed.sel = +d.dataset.k; draw(); } });
+
+function pt(e) { const r = cv.getBoundingClientRect();
+  return [Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), Math.min(1, Math.max(0, (e.clientY - r.top) / r.height))]; }
+function handleAt(x, y) {
+  if (ed.sel < 0) return null;
+  const r = cv.getBoundingClientRect(), tolX = 12 / r.width, tolY = 12 / r.height;
+  const [x1, y1, x2, y2] = xyxy(ed.boxes[ed.sel]);
+  for (const [hx, hy, ax, ay] of [[x1, y1, x2, y2], [x2, y1, x1, y2], [x1, y2, x2, y1], [x2, y2, x1, y1]])
+    if (Math.abs(x - hx) < tolX && Math.abs(y - hy) < tolY) return { ax, ay };
+  return null;
+}
+function boxAt(x, y) {
+  let best = -1, area = 9;
+  ed.boxes.forEach((b, k) => { const [x1, y1, x2, y2] = xyxy(b);
+    if (x >= x1 && x <= x2 && y >= y1 && y <= y2 && b.w * b.h < area) { best = k; area = b.w * b.h; } });
+  return best;
+}
+cv.addEventListener("pointerdown", e => {
+  if (ed.hide) return;
+  cv.setPointerCapture(e.pointerId);
+  const [x, y] = pt(e), h = handleAt(x, y);
+  if (h) { snapshot(); ed.drag = { mode: "resize", ...h }; return; }
+  const k = boxAt(x, y);
+  if (k >= 0) { ed.sel = k; snapshot(); const b = ed.boxes[k];
+    ed.drag = { mode: "move", dx: x - b.cx, dy: y - b.cy, moved: false }; draw(); return; }
+  ed.sel = -1; ed.drag = { mode: "new", x0: x, y0: y, x, y }; draw();
+});
+cv.addEventListener("pointermove", e => {
+  const [x, y] = pt(e);
+  if (!ed.drag) { cv.style.cursor = handleAt(x, y) ? "nwse-resize" : boxAt(x, y) >= 0 ? "move" : "crosshair"; return; }
+  const d = ed.drag, b = ed.boxes[ed.sel];
+  if (d.mode === "new") { d.x = x; d.y = y; }
+  else if (d.mode === "resize") fromXyxy(b, d.ax, d.ay, x, y);
+  else if (d.mode === "move") {
+    b.cx = Math.min(1 - b.w / 2, Math.max(b.w / 2, x - d.dx)); b.cy = Math.min(1 - b.h / 2, Math.max(b.h / 2, y - d.dy));
+    d.moved = true; delete b.score;
+  }
+  draw();
+});
+cv.addEventListener("pointerup", () => {
+  const d = ed.drag; ed.drag = null;
+  if (!d) return;
+  if (d.mode === "move" && !d.moved) { ed.undo.pop(); ed.dirty = ed.undo.length > 0; }
+  if (d.mode === "new") {
+    const r = cv.getBoundingClientRect();
+    if (Math.abs(d.x - d.x0) * r.width > 6 && Math.abs(d.y - d.y0) * r.height > 6) {
+      snapshot(); const b = { cls: ed.drawCls }; fromXyxy(b, d.x0, d.y0, d.x, d.y);
+      ed.boxes.push(b); ed.sel = ed.boxes.length - 1;
+    }
+  }
+  draw();
+});
+
+function setCls(k) { ed.drawCls = k;
+  if (ed.sel >= 0 && ed.boxes[ed.sel].cls !== k) { snapshot(); ed.boxes[ed.sel].cls = k; delete ed.boxes[ed.sel].score; }
+  draw(); }
+function delSel() { if (ed.sel < 0) return; snapshot(); ed.boxes.splice(ed.sel, 1); ed.sel = -1; draw(); }
+function delUnsure() {
+  const f = cur(), keep = ed.boxes.filter(b => !isUnsure(f, b));
+  if (keep.length === ed.boxes.length) { flash("No dashed boxes"); return; }
+  snapshot(); ed.boxes = keep; ed.sel = -1; draw();
+}
+function undo() { if (!ed.undo.length) return; ed.boxes = JSON.parse(ed.undo.pop()); ed.sel = -1; ed.dirty = ed.undo.length > 0; draw(); }
+
+$("cPerson").onclick = () => setCls(0); $("cPhone").onclick = () => setCls(67);
+$("bDel").onclick = delSel; $("bUnsure").onclick = delUnsure; $("bUndo").onclick = undo;
+$("bSave").onclick = () => saveAndNext("ok"); $("bExclude").onclick = () => saveAndNext("excluded");
+$("bPrev").onclick = () => go(-1); $("bNext").onclick = () => go(1); $("bSheet").onclick = closeEditor;
+$("guideBtn").onclick = () => $("guide").showModal();
+
+document.addEventListener("keydown", e => {
+  if ($("edit").classList.contains("hidden") || $("guide").open) return;
+  if (e.target.tagName === "SELECT") return;
+  const k = e.key.toLowerCase();
+  if ((e.ctrlKey || e.metaKey) && k === "z") { e.preventDefault(); undo(); return; }
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  if (k === "delete" || k === "backspace") { e.preventDefault(); delSel(); }
+  else if (k === "1" || k === "p") setCls(0);
+  else if (k === "2" || k === "m") setCls(67);
+  else if (k === "enter" || k === "s") { e.preventDefault(); saveAndNext("ok"); }
+  else if (k === "x") saveAndNext("excluded");
+  else if (k === "arrowright" || k === "d") go(1);
+  else if (k === "arrowleft" || k === "a") go(-1);
+  else if (k === "h") { ed.hide = !ed.hide; draw(); }
+  else if (k === "u") delUnsure();
+  else if (k === "tab") { e.preventDefault(); if (ed.boxes.length) { ed.sel = (ed.sel + (e.shiftKey ? -1 + ed.boxes.length : 1)) % ed.boxes.length; draw(); } }
+  else if (k === "escape") { if (ed.sel >= 0) { ed.sel = -1; draw(); } else closeEditor(); }
+});
+window.addEventListener("beforeunload", e => { if (ed && ed.dirty) { e.preventDefault(); e.returnValue = ""; } });
+
+load().then(renderSheet);
+</script>
+</body>
+</html>
