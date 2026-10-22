@@ -5,10 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Log in - OfficeEye</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='icon.svg') }}">
 </head>
 <body class="login-page">
   <form class="login-box" method="post" action="/login">
-    <div class="login-brand">OfficeEye<small>office camera monitor</small></div>
+    <div class="login-brand"><img class="brand-icon" src="{{ url_for('static', filename='icon.svg') }}" alt="">
+      <span>OfficeEye<small>office camera monitor</small></span></div>
     <input type="hidden" name="next" value="{{ next }}">
     <label for="user">Username</label>
     <input id="user" name="username" autocomplete="username" autofocus required>

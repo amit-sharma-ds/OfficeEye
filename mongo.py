@@ -250,6 +250,9 @@ class Sync:
                 if now - last_refresh >= 120:
                     last_refresh = now
                     insert_detections(events.rows_of_day(CHANGING, today.strftime("%Y-%m-%d")))
+                    gone = events.deleted_since()           # deleted by hand on this PC
+                    if gone:
+                        get_db().detections.delete_many({"_id": {"$in": gone}})
                 if self._listing and now - last_cams >= 300:
                     last_cams = now
                     save_cameras(self._listing())

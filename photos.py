@@ -109,6 +109,27 @@ def _write(folder, day, filename, img):
     return day + "/" + filename
 
 
+def remove(shots):
+    """Delete the photo files of one record (its meta "photos" list) - a
+    record deleted by hand. Only files inside PHOTO_DIR are touched."""
+    root = os.path.realpath(PHOTO_DIR)
+    gone = 0
+    for shot in shots or []:
+        if not isinstance(shot, dict):
+            continue
+        for name in [shot.get("full")] + list(shot.get("crops") or []):
+            if not isinstance(name, str) or not name:
+                continue
+            path = os.path.realpath(os.path.join(PHOTO_DIR, name))
+            if path.startswith(root + os.sep) and os.path.isfile(path):
+                try:
+                    os.remove(path)
+                    gone += 1
+                except OSError:
+                    log.warning("could not delete %s", path)
+    return gone
+
+
 def purge(keep_days):
     """Delete whole days older than keep_days."""
     if not os.path.isdir(PHOTO_DIR):

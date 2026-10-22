@@ -56,6 +56,13 @@ CREATE TABLE IF NOT EXISTS camera_days (
     last_online TEXT,
     PRIMARY KEY (day, camera)
 );
+
+-- Records deleted by hand (Restricted area page), so the cloud view and
+-- the MongoDB copy drop them too.
+CREATE TABLE IF NOT EXISTS deleted (
+    id          INTEGER PRIMARY KEY,      -- the event's id
+    at          TEXT    NOT NULL          -- ISO time it was deleted
+);
 """
 
 
@@ -154,6 +161,51 @@ def get(event_id):
         row = _get().execute("SELECT * FROM events WHERE id = ?",
                              (event_id,)).fetchone()
     return _row(row) if row else None
+
+
+def delete(event_id, kind):
+    """Delete one record by hand. Returns its meta (to remove its photos),
+    or None when there is no such record of that kind."""
+    with _lock:
+        conn = _get()
+        row = conn.execute("SELECT meta FROM events WHERE id = ? AND kind = ?",
+                           (event_id, kind)).fetchone()
+        if row is None:
+            return None
+        conn.execute("DELETE FROM events WHERE id = ?", (event_id,))
+        conn.execute("INSERT OR REPLACE INTO deleted (id, at) VALUES (?, ?)",
+                     (event_id, datetime.now().isoformat(timespec="seconds")))
+        conn.commit()
+    _peak_cache.clear()
+    _day_cache.clear()
+    return _meta(row["meta"])
+
+
+def deleted_since(days=3):
+    """Ids deleted by hand lately - sent on to the cloud and MongoDB."""
+    since = (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
+    with _lock:
+        rows = _get().execute("SELECT id FROM deleted WHERE at >= ?", (since,)).fetchall()
+    return [r["id"] for r in rows]
+
+
+def drop_rows(ids):
+    """The cloud side: forget records deleted on the office PC. Returns the
+    metas of the ones it still had (to remove their photos)."""
+    ids = [int(i) for i in ids or []]
+    if not ids:
+        return []
+    marks = ",".join("?" * len(ids))
+    with _lock:
+        conn = _get()
+        rows = conn.execute("SELECT meta FROM events WHERE id IN ({})".format(marks), ids).fetchall()
+        if rows:
+            conn.execute("DELETE FROM events WHERE id IN ({})".format(marks), ids)
+            conn.commit()
+    if rows:
+        _peak_cache.clear()
+        _day_cache.clear()
+    return [_meta(r["meta"]) for r in rows]
 
 
 def count_today(kind, with_photos=False):

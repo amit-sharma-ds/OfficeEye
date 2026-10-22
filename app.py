@@ -191,6 +191,17 @@ def api_alert(event_id):
     return jsonify(ev)
 
 
+@app.post("/api/alerts/<int:event_id>/delete")
+def api_alert_delete(event_id):
+    """Delete one restricted-area alert and its photos (the cloud view and
+    the MongoDB copy follow within a minute or two)."""
+    meta = events.delete(event_id, "restricted_alert")
+    if meta is None:
+        return jsonify({"ok": False, "message": "That alert is already gone"})
+    photos.remove(meta.get("photos"))
+    return jsonify({"ok": True, "message": "Alert deleted"})
+
+
 @app.get("/api/people/day")
 def api_people_day():
     """People in view hour by hour, for the dashboard chart."""

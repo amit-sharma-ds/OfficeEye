@@ -170,18 +170,41 @@ async function loadAlerts() {
     const shots = (m.photos || []).reduce((n, s) => n + 1 + (s.crops || []).length, 0);
     const th = eventThumb(a);
     const ongoing = !m.ended && day.value === today();
-    return `<button class="incident ${ongoing ? 'live' : ''}" data-i="${i}">` +
+    return `<div class="inc-wrap"><button class="incident ${ongoing ? 'live' : ''}" data-i="${i}">` +
       (th ? `<img src="${esc(th)}" alt="">` : '<span class="noimg">no photo</span>') +
       `<div class="inc-body"><b>${esc(name)}</b>` +
       `<span>${clock(a.ts)} · ${plural(m.people || a.value, 'person')}</span>` +
       `<span>${ongoing ? 'still there' : (m.seconds != null ? 'for ' + m.seconds + ' s' : '')}` +
-      ` · ${plural(shots, 'photo')}</span></div></button>`;
+      ` · ${plural(shots, 'photo')}</span></div></button>` +
+      (canDelete ? `<button class="inc-del" data-id="${a.id}" title="Delete this alert and its photos"` +
+        ` aria-label="Delete this alert">${TRASH}</button>` : '') + '</div>';
   }).join('') : '<p class="empty">No alerts on this day.</p>';
   $$('#incidents .incident').forEach(b => b.onclick = () => {
     const a = lastLoaded[+b.dataset.i];
     openPhotos(eventPhotos(a, names[a.camera] || a.camera), 0);
   });
+  // Delete takes two separate clicks, so a stray click - or a double-click -
+  // does nothing.
+  $$('#incidents .inc-del').forEach(b => b.onclick = async () => {
+    if (b.classList.contains('sure') && Date.now() - b.armedAt < 700) return;
+    clearTimeout(b.undoTimer);
+    if (!b.classList.contains('sure')) {
+      b.armedAt = Date.now();
+      b.classList.add('sure');
+      b.innerHTML = `${TRASH}<span>Delete?</span>`;
+      b.undoTimer = setTimeout(() => { b.classList.remove('sure'); b.innerHTML = TRASH; }, 4000);
+      return;
+    }
+    b.disabled = true;
+    const r = await post(`/api/alerts/${b.dataset.id}/delete`, {});
+    if (!r.ok) b.disabled = false;
+    loadAlerts().catch(() => {});
+  });
 }
+const canDelete = {{ 'false' if cloud_mode else 'true' }};       // the cloud view is read only
+const TRASH = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" ' +
+  'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+  '<path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/></svg>';
 
 // ------------------------------------------------------------ live state
 let knownLatest = null, listAt = 0;

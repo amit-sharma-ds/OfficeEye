@@ -5,10 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}{% endblock %} - OfficeEye</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='icon.svg') }}">
 </head>
 <body>
   <aside class="sidebar">
-    <div class="brand">OfficeEye<small>office camera monitor</small></div>
+    <div class="brand"><img class="brand-icon" src="{{ url_for('static', filename='icon.svg') }}" alt="">
+      <span>OfficeEye<small>office camera monitor</small></span></div>
 
     <nav>
       <a href="/"           class="{{ 'on' if page == 'dashboard' }}">Dashboard</a>

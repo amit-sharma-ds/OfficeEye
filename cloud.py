@@ -377,13 +377,18 @@ def _install_cloud(app):
     def push_events():
         if not _token_ok():
             return jsonify({"ok": False, "message": "wrong push token"}), 401
-        rows = []
-        for r in _json_body().get("rows") or []:
+        body, rows = _json_body(), []
+        for r in body.get("rows") or []:
             try:
                 rows.append(_clean_row(r))
             except (KeyError, TypeError, ValueError):
                 continue
         events.store_rows(rows)
+        try:                                    # deleted by hand on the office PC
+            for meta in events.drop_rows(body.get("deleted") or []):
+                photos.remove(meta.get("photos"))
+        except (TypeError, ValueError):
+            pass
         missing = []
         for r in rows:
             for name in _photo_names(r["meta"]):
@@ -541,13 +546,15 @@ class Uplink:
                 if pushed_id is not None and now - last_events >= 3:
                     last_events = now
                     new = events.rows_after(pushed_id, 1000)
-                    rows = list(new)
+                    rows, deleted = list(new), []
                     if now - last_refresh >= 30:
                         last_refresh = now
                         rows += events.rows_of_day(["restricted_alert", "phone_use", "washroom_in", "head_down"],
                                                    datetime.now().strftime("%Y-%m-%d"))
-                    if rows:
-                        r = self._json(http, cfg, "/api/cloud/push/events", {"rows": rows})
+                        deleted = events.deleted_since()
+                    if rows or deleted:
+                        r = self._json(http, cfg, "/api/cloud/push/events",
+                                       {"rows": rows, "deleted": deleted})
                         if new:                     # only new rows move the mark on
                             pushed_id = new[-1]["id"]
                         missing = list(dict.fromkeys(missing + (r.get("missing") or [])))

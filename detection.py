@@ -543,7 +543,14 @@ class RestrictedArea(Detector):
     the camera (or anywhere in view, when no zone is drawn) raises an alert
     with photos, and it clears once the zone has looked empty for a few
     seconds. While the alert is open a few more photos are taken, so there is
-    a clear picture of who it was."""
+    a clear picture of who it was.
+
+    Two guards against false alerts. An alert opens only when somebody is
+    seen in at least CONFIRM checks a few seconds apart, not on one frame.
+    And each camera slowly learns how the empty room looks: a weak "person"
+    that matches that picture - a cloth on a sofa, a coat on a chair - is
+    part of the room, not an intruder. Anybody the model is sure of always
+    counts, still or not."""
 
     key = "restricted"
     title = "Restricted area"
@@ -552,6 +559,12 @@ class RestrictedArea(Detector):
     CLEAR_AFTER = 5.0       # zone must look empty this long before it clears
     PHOTO_EVERY = 4.0
     MAX_PHOTOS = 4
+    CONFIRM = 2             # seen in this many checks ...
+    CONFIRM_WITHIN = 3.0    # ... within this many seconds before an alert opens
+    BG_WIDTH = 320          # the learnt room picture, pixels across
+    BG_TIME = 180.0         # how slowly it learns (s): somebody walking in is not learnt
+    STILL_MATCH = 0.9       # a box this like the room picture is part of the room ...
+    STILL_SCORE = 0.9       # ... unless the model is at least this sure it is a person
 
     def __init__(self):
         super().__init__()
@@ -561,7 +574,27 @@ class RestrictedArea(Detector):
     def _blank():
         return {"inside": [], "outside": [], "zone": [], "occupied": False,
                 "since": 0.0, "started": 0.0, "last_seen": 0.0, "cleared_at": 0.0,
-                "event": None, "photos": [], "photo_at": 0.0, "peak": 0}
+                "event": None, "photos": [], "photo_at": 0.0, "peak": 0,
+                "hits": [], "bg": None, "bg_at": 0.0}
+
+    def _small(self, frame):
+        grey = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        h = int(grey.shape[0] * self.BG_WIDTH / grey.shape[1])
+        return cv2.resize(grey, (self.BG_WIDTH, h)).astype(np.float32)
+
+    def _part_of_room(self, box, small, bg, shape):
+        """Does this weak box look just like the learnt empty room there?"""
+        if bg is None or box[4] >= self.STILL_SCORE:
+            return False
+        s = small.shape[1] / float(shape[1])
+        x1, y1, x2, y2 = (int(round(v * s)) for v in box[:4])
+        a = small[max(0, y1):y2, max(0, x1):x2]
+        b = bg[max(0, y1):y2, max(0, x1):x2]
+        if a.shape[0] < 8 or a.shape[1] < 8:
+            return False                    # too small to judge: count it
+        a, b = a - a.mean(), b - b.mean()
+        d = float(np.sqrt((a * a).sum() * (b * b).sum()))
+        return d > 1e-6 and float((a * b).sum()) / d >= self.STILL_MATCH
 
     @staticmethod
     def split(people, zone, shape):
@@ -580,16 +613,31 @@ class RestrictedArea(Detector):
 
     def process(self, camera, frame, ts, seen):
         zone = (config.camera(camera) or {}).get("zone") or []
-        inside, outside = self.split(seen.people, zone, frame.shape)
+        small = self._small(frame)
+        with self._lock:
+            st = self._state.setdefault(camera, self._blank())
+            bg = st["bg"]
+        room = [b for b in seen.people if self._part_of_room(b, small, bg, frame.shape)]
+        people = [b for b in seen.people if all(b is not r for r in room)]
+        inside, outside = self.split(people, zone, frame.shape)
+        outside = outside + room                    # shown grey, never an alert
         n = len(inside)
         when = datetime.fromtimestamp(ts)
         shoot = new_alert = cleared = False
 
         reopened = False
         with self._lock:
-            st = self._state.setdefault(camera, self._blank())
+            # Learn the room slowly - somebody walking through is not learnt.
+            if st["bg"] is None or small.shape != st["bg"].shape:
+                st["bg"] = small
+            else:
+                a = min(1.0, max(0.0, ts - st["bg_at"]) / self.BG_TIME)
+                st["bg"] = st["bg"] * (1.0 - a) + small * a
+            st["bg_at"] = ts
             st["inside"], st["outside"], st["zone"] = inside, outside, zone
             if n:
+                st["hits"] = [t for t in st["hits"] if ts - t <= self.CONFIRM_WITHIN] + [ts]
+            if n and (st["occupied"] or len(st["hits"]) >= self.CONFIRM):
                 if not st["occupied"]:
                     st["occupied"], st["since"] = True, ts
                     if st["event"] and ts - st["cleared_at"] < self.ALERT_GAP:
