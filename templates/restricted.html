@@ -40,7 +40,14 @@
   <div class="card-head">
     <h2>Alerts</h2>
     <span class="hint-inline" id="alert-count"></span>
+    <button class="ghost sm" id="sel-toggle" hidden>Select</button>
     <input type="date" id="day" class="date">
+  </div>
+  <div class="sel-bar" id="sel-bar" hidden>
+    <span id="sel-n">0 selected</span>
+    <button class="ghost sm" id="sel-all">Select all</button>
+    <button class="danger sm" id="sel-del" disabled>Delete selected</button>
+    <button class="ghost sm" id="sel-cancel">Cancel</button>
   </div>
   <div class="incidents" id="incidents"><p class="empty">Loading&hellip;</p></div>
 </div>
@@ -170,7 +177,8 @@ async function loadAlerts() {
     const shots = (m.photos || []).reduce((n, s) => n + 1 + (s.crops || []).length, 0);
     const th = eventThumb(a);
     const ongoing = !m.ended && day.value === today();
-    return `<div class="inc-wrap"><button class="incident ${ongoing ? 'live' : ''}" data-i="${i}">` +
+    return `<div class="inc-wrap" data-id="${a.id}"><span class="inc-check" aria-hidden="true"></span>` +
+      `<button class="incident ${ongoing ? 'live' : ''}" data-i="${i}">` +
       (th ? `<img src="${esc(th)}" alt="">` : '<span class="noimg">no photo</span>') +
       `<div class="inc-body"><b>${esc(name)}</b>` +
       `<span>${clock(a.ts)} · ${plural(m.people || a.value, 'person')}</span>` +
@@ -181,8 +189,16 @@ async function loadAlerts() {
   }).join('') : '<p class="empty">No alerts on this day.</p>';
   $$('#incidents .incident').forEach(b => b.onclick = () => {
     const a = lastLoaded[+b.dataset.i];
+    if (selecting) {                                  // pick it instead of opening it
+      picked.has(a.id) ? picked.delete(a.id) : picked.add(a.id);
+      paintSel();
+      return;
+    }
     openPhotos(eventPhotos(a, names[a.camera] || a.camera), 0);
   });
+  const shown = new Set(alerts.map(a => a.id));       // forget picks no longer listed
+  [...picked].forEach(id => shown.has(id) || picked.delete(id));
+  paintSel();
   // Delete takes two separate clicks, so a stray click - or a double-click -
   // does nothing.
   $$('#incidents .inc-del').forEach(b => b.onclick = async () => {
@@ -202,6 +218,61 @@ async function loadAlerts() {
   });
 }
 const canDelete = true;       // on the cloud view the office PC deletes it
+
+// ------------------------------------------------------------ select several, delete together
+let selecting = false;
+const picked = new Set();
+function paintSel() {
+  $('#sel-bar').hidden = !selecting;
+  $('#sel-toggle').hidden = selecting || !(lastLoaded && lastLoaded.length);
+  $('#incidents').classList.toggle('selecting', selecting);
+  $$('#incidents .inc-wrap').forEach(w => w.classList.toggle('picked', picked.has(+w.dataset.id)));
+  $('#sel-n').textContent = `${picked.size} selected`;
+  const del = $('#sel-del');
+  del.disabled = !picked.size;
+  if (!del.classList.contains('sure'))
+    del.textContent = picked.size ? `Delete ${plural(picked.size, 'alert')}` : 'Delete selected';
+  $('#sel-all').textContent = lastLoaded && lastLoaded.length && picked.size === lastLoaded.length
+    ? 'Select none' : 'Select all';
+}
+function endSel() {
+  selecting = false;
+  picked.clear();
+  const del = $('#sel-del');
+  clearTimeout(del.undoTimer);
+  del.classList.remove('sure');
+  paintSel();
+}
+$('#sel-toggle').onclick = () => { selecting = true; paintSel(); };
+$('#sel-cancel').onclick = endSel;
+$('#sel-all').onclick = () => {
+  const all = (lastLoaded || []).map(a => a.id);
+  if (picked.size === all.length) picked.clear(); else all.forEach(id => picked.add(id));
+  paintSel();
+};
+// Like the single delete: two separate clicks, a double-click does nothing.
+$('#sel-del').onclick = async () => {
+  const del = $('#sel-del');
+  if (del.classList.contains('sure') && Date.now() - del.armedAt < 700) return;
+  clearTimeout(del.undoTimer);
+  if (!del.classList.contains('sure')) {
+    del.armedAt = Date.now();
+    del.classList.add('sure');
+    del.textContent = `Click again to delete ${plural(picked.size, 'alert')}`;
+    del.undoTimer = setTimeout(() => { del.classList.remove('sure'); paintSel(); }, 4000);
+    return;
+  }
+  del.disabled = true;
+  const r = await post('/api/alerts/delete', {ids: [...picked]});
+  if (r.ok) {
+    toast({title: 'Restricted area', body: r.message, kind: 'info'});
+    endSel();
+  } else {
+    del.classList.remove('sure');
+    paintSel();
+  }
+  loadAlerts().catch(() => {});
+};
 const TRASH = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" ' +
   'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
   '<path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/></svg>';

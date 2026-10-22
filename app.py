@@ -203,6 +203,25 @@ def api_alert_delete(event_id):
     return jsonify({"ok": True, "message": "Alert deleted"})
 
 
+@app.post("/api/alerts/delete")
+def api_alerts_delete():
+    """Delete several restricted-area alerts and their photos at once
+    (Restricted page -> Select)."""
+    body = request.get_json(silent=True) or {}
+    try:
+        ids = [int(i) for i in body.get("ids") or []][:1000]
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "message": "Pick the alerts to delete"})
+    gone = 0
+    for event_id in ids:
+        meta = events.delete(event_id, "restricted_alert")
+        if meta is not None:
+            photos.remove(meta.get("photos"))
+            gone += 1
+    return jsonify({"ok": True, "deleted": gone,
+                    "message": "{} alert{} deleted".format(gone, "" if gone == 1 else "s")})
+
+
 @app.get("/api/people/day")
 def api_people_day():
     """People in view hour by hour, for the dashboard chart."""
