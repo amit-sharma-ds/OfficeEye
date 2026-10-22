@@ -777,7 +777,7 @@ def main():
     pipeline.start()
     threading.Thread(target=_uptime_watch, name="uptime", daemon=True).start()
     cloud.uplink.start(_status_payload, _render, manager.listing)
-    mongo.sync.start()
+    mongo.sync.start(manager.listing)
     log.info("open  http://localhost:%s", PORT)
     try:
         app.run(host="0.0.0.0", port=PORT, threaded=True,
