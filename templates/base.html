@@ -36,7 +36,7 @@
   </aside>
 
   <div class="content">
-    {% if cloud_mode %}<div class="cloud-bar" id="cloud-bar">Cloud view &middot; read only</div>{% endif %}
+    {% if cloud_mode %}<div class="cloud-bar" id="cloud-bar">Cloud view &middot; changes are made on the office PC</div>{% endif %}
     {% block body %}{% endblock %}
   </div>
 
@@ -46,7 +46,7 @@
       <div class="modal-head">
         <b id="live-name"></b>
         <span class="modal-sub" id="live-info"></span>
-        <button class="ghost sm" id="live-ignore" title="Mark posters, TVs and the like that are mistaken for people" {{ 'hidden' if cloud_mode }}>Ignore areas</button>
+        <button class="ghost sm" id="live-ignore" title="Mark posters, TVs and the like that are mistaken for people">Ignore areas</button>
         <button class="x" data-close aria-label="Close">&times;</button>
       </div>
       <img id="live-img" class="live-img" alt="">
@@ -106,10 +106,16 @@
         body: JSON.stringify(body || {}),
       });
       if (res.status === 401 || res.status === 403) {
-        // The cloud view is read only: say so instead of failing quietly.
+        // Not allowed here (the cloud-view login): say so instead of failing quietly.
         const r = await res.json().catch(() => ({}));
         toast({title: 'Read only', body: r.message || 'Change this on the office PC.', kind: 'info'});
         throw new Error('read only');
+      }
+      if (res.status === 503 || res.status === 504) {
+        // Cloud view: the office PC makes the change, and it is offline or slow.
+        const r = await res.json().catch(() => ({}));
+        toast({title: 'Office PC', body: r.message || 'The office PC did not answer.', kind: 'info'});
+        return r;
       }
       return res.json();
     };
@@ -372,7 +378,7 @@
       bar.textContent = ago == null
         ? 'Cloud view - the office PC has not sent anything yet. Turn it on under Settings -> Cloud view on the office PC.'
         : away ? `Cloud view - the office PC stopped sending at ${clock(c.office_seen_at).slice(0, 5)}. Records up to then are shown; nothing is live.`
-        : `Cloud view - read only. Office PC sent data ${ago < 5 ? 'just now' : ago + ' s ago'}.`;
+        : `Cloud view - changes here are made on the office PC. It sent data ${ago < 5 ? 'just now' : ago + ' s ago'}.`;
     }
 
     async function poll() {

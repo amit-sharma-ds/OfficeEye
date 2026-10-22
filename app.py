@@ -12,6 +12,7 @@ import cv2
 import numpy as np
 from flask import (Flask, Response, abort, jsonify, redirect, render_template,
                    request, send_from_directory)
+from werkzeug.security import safe_join
 
 import cloud
 import config
@@ -759,7 +760,14 @@ def live(cam_id):
 
 @app.get("/photos/<path:name>")
 def photo(name):
-    return send_from_directory(photos.PHOTO_DIR, name, max_age=86400)
+    path = safe_join(photos.PHOTO_DIR, name)
+    if path and os.path.isfile(path):
+        return send_from_directory(photos.PHOTO_DIR, name, max_age=86400)
+    # Not here: on the cloud view it is still on its way from the office PC,
+    # on the office PC it was deleted. A picture saying so - never a broken
+    # image - and not cached, so the real photo shows once it arrives.
+    text = "photo on its way" if cloud.CLOUD else "photo deleted"
+    return Response(_blank(text), mimetype="image/jpeg", headers={"Cache-Control": "no-store"})
 
 
 # ---------------------------------------------------------------- main

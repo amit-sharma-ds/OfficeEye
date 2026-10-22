@@ -28,6 +28,7 @@ import re
 import secrets
 import threading
 import time
+from collections import deque
 from copy import deepcopy
 from datetime import datetime, timedelta
 from urllib.parse import quote, urlencode
@@ -48,6 +49,8 @@ CLOUD = MODE == "cloud"
 PASSWORD = os.environ.get("OFFICEEYE_PASSWORD", "")
 PUSH_TOKEN = os.environ.get("OFFICEEYE_PUSH_TOKEN", "")
 READ_ONLY = "This is the cloud view - change it on the office PC."
+# Read on the office PC, not here: a network scan, the office's photo folder.
+RELAY_GET = ("/api/scan", "/api/photos/usage")
 OFFICE_GONE = 90          # seconds without a push before the office counts as away
 # New on every start of the cloud copy. Render's free plan starts with an
 # empty disk each time, so a new BOOT tells the office to send its last
@@ -85,6 +88,38 @@ class Store:
         self.pushed_at = 0.0
         self.viewer_at = 0.0       # when a logged-in page last polled the status
         self.login = None          # (salt, sha256) of the cloud password, sent by the office
+        self.commands = {}         # changes made here, waiting for the office PC
+        self.cmd_cv = threading.Condition()
+
+    def ask_office(self, req, wait=40.0):
+        """Hand a change made on the cloud view to the office PC (it holds the
+        cameras and settings) and wait for its answer: (status, body, type),
+        or None when it did not answer in time."""
+        cid = secrets.token_hex(8)
+        with self.cmd_cv:
+            self.commands[cid] = dict(req, id=cid, sent_at=0.0, result=None)
+            end = time.time() + wait
+            while self.commands[cid]["result"] is None and time.time() < end:
+                self.cmd_cv.wait(end - time.time())
+            return self.commands.pop(cid)["result"]
+
+    def take_commands(self):
+        """Changes for the office, sent with the answer to its status push.
+        One not answered within 20 s is sent again (the office skips repeats)."""
+        now, out = time.time(), []
+        with self.cmd_cv:
+            for c in self.commands.values():
+                if c["result"] is None and now - c["sent_at"] > 20:
+                    c["sent_at"] = now
+                    out.append({k: c[k] for k in ("id", "method", "path", "query", "body", "ctype")})
+        return out
+
+    def command_done(self, cid, status, body, ctype):
+        with self.cmd_cv:
+            c = self.commands.get(cid)
+            if c is not None and c["result"] is None:
+                c["result"] = (status, body, ctype)
+                self.cmd_cv.notify_all()
 
     def want(self):
         """Pictures the office should send, and how often (s)."""
@@ -291,11 +326,34 @@ def _install_cloud(app):
             if p.startswith(("/api/", "/frame/", "/snapshot/", "/live/", "/photos/")):
                 return jsonify({"ok": False, "message": "Log in first"}), 401
             return redirect("/login?next=" + quote(request.full_path.rstrip("?")))
+        if p.startswith("/api/") and not p.startswith("/api/cloud/") and \
+                (request.method not in ("GET", "HEAD") or p in RELAY_GET):
+            return _relay()                     # made on the office PC
         if request.method not in ("GET", "HEAD"):
             return jsonify({"ok": False, "message": READ_ONLY}), 403
         if p == "/api/status":
             store.viewer_at = time.time()
         return None
+
+    def _relay():
+        """A change made on the cloud view: the office PC makes it, exactly as
+        if it were made there, and its answer comes back to the page. The
+        cloud-view login and push token can only be changed on the office PC."""
+        with store.lock:
+            ago = time.time() - store.pushed_at if store.pushed_at else None
+        if ago is None or ago > OFFICE_GONE:
+            return jsonify({"ok": False, "message": "The office PC is offline - "
+                            "changes can be made once it is sending again."}), 503
+        store.viewer_at = time.time()           # the office checks in every 2 s now
+        res = store.ask_office({"method": request.method, "path": request.path,
+                                "query": request.query_string.decode("utf-8", "replace"),
+                                "body": request.get_data(as_text=True),
+                                "ctype": request.content_type or ""})
+        if res is None:
+            return jsonify({"ok": False, "message": "The office PC did not answer in time - "
+                            "check on it and try again."}), 504
+        status, body, ctype = res
+        return Response(body, status=status, content_type=ctype or "application/json")
 
     @app.get("/healthz")
     def healthz():
@@ -363,9 +421,23 @@ def _install_cloud(app):
                         ("session:" + login["salt"] + login["hash"]).encode()).hexdigest()
         return jsonify({"ok": True, "want": store.want(),
                         "viewers": time.time() - store.viewer_at < 60,
+                        "commands": store.take_commands() if body.get("take_commands") else [],
                         "boot": BOOT,
                         "events_last_id": events.max_id(),
                         "have_days": bool(events.camera_days("2000-01-01", "2999-12-31")[:1])})
+
+    @app.post("/api/cloud/push/result")
+    def push_result():
+        """The office PC's answer to a change made on the cloud view."""
+        if not _token_ok():
+            return jsonify({"ok": False, "message": "wrong push token"}), 401
+        body = _json_body()
+        try:
+            store.command_done(str(body.get("id") or ""), int(body.get("status") or 500),
+                               str(body.get("body") or ""), str(body.get("ctype") or ""))
+        except (TypeError, ValueError):
+            return jsonify({"ok": False}), 400
+        return jsonify({"ok": True})
 
     @app.post("/api/cloud/push/frame/<cam_id>")
     def push_frame(cam_id):
@@ -453,6 +525,8 @@ class Uplink:
         self.viewers = False
         self.want = {}             # camera -> seconds between pictures
         self._lock = threading.Lock()
+        self._app = None           # this PC's Flask app, for changes made on the cloud view
+        self._done = deque(maxlen=200)   # ids of those already made
 
     def start(self, status_fn, render_fn, listing_fn):
         self._status_fn, self._render_fn, self._listing_fn = status_fn, render_fn, listing_fn
@@ -495,6 +569,43 @@ class Uplink:
         return self._post(http, cfg, path, json.dumps(obj, default=str).encode(),
                           "application/json", gz=True)
 
+    # ---------- changes made on the cloud view ----------
+
+    def _command(self, cmd):
+        """Make a change sent from the cloud view here, exactly as if it were
+        made on this PC. Then the cloud gets the new state and records first,
+        and the answer last, so the page that made it sees it at once."""
+        import requests
+        path, method = str(cmd.get("path") or ""), str(cmd.get("method") or "POST").upper()
+        before = events.max_id()
+        if self._app is None or not path.startswith("/api/") or path.startswith("/api/cloud/"):
+            status, body, ctype = 403, json.dumps({"ok": False, "message": READ_ONLY}), "application/json"
+        else:
+            try:
+                with self._app.test_client() as c:
+                    r = c.open(path, method=method, query_string=str(cmd.get("query") or ""),
+                               data=str(cmd.get("body") or "").encode("utf-8"),
+                               content_type=str(cmd.get("ctype") or "application/json"))
+                status, body, ctype = r.status_code, r.get_data(as_text=True), r.content_type
+            except Exception:                             # noqa: BLE001
+                log.exception("change from the cloud view failed: %s %s", method, path)
+                status, ctype = 500, "application/json"
+                body = json.dumps({"ok": False, "message": "The office PC could not make that change"})
+            if method != "GET":
+                log.info("change from the cloud view: %s %s -> %s", method, path, status)
+        cfg = config.get("cloud")
+        try:
+            http = requests.Session()
+            if method != "GET" and status < 400:
+                self._json(http, cfg, "/api/cloud/push/state", self._state_body())
+                self._json(http, cfg, "/api/cloud/push/events",
+                           {"rows": events.rows_after(before, 1000),
+                            "deleted": events.deleted_since()})
+            self._json(http, cfg, "/api/cloud/push/result",
+                       {"id": cmd.get("id"), "status": status, "body": body, "ctype": ctype})
+        except Exception as e:                            # noqa: BLE001
+            log.warning("cloud view: answer not sent (%s)", _mask_links(str(e))[:200])
+
     # ---------- status, records, photos ----------
 
     def _state_body(self):
@@ -508,7 +619,8 @@ class Uplink:
             cams.append(c)
         cloud = config.get("cloud")
         body = {"status": st, "cameras": cams,
-                "settings": {k: config.get(k) for k in ("office", "detection", "photos", "sleeping")}}
+                "settings": {k: config.get(k) for k in ("office", "detection", "photos", "phone",
+                                                        "sleeping")}}
         if cloud.get("salt") and cloud.get("hash"):
             # Only a salted hash of the login password leaves this PC.
             body["login"] = {"salt": cloud["salt"], "hash": cloud["hash"],
@@ -536,9 +648,15 @@ class Uplink:
                 # Every 2 s while somebody looks at the cloud view, else every
                 # 10 s - and at once when a new restricted alert starts.
                 if now - last_state >= (2 if self.viewers else 10) or latest != last_alert:
-                    r = self._json(http, cfg, "/api/cloud/push/state", self._state_body())
+                    r = self._json(http, cfg, "/api/cloud/push/state",
+                                   dict(self._state_body(), take_commands=True))
                     last_state, last_alert = now, latest
                     self.want, self.viewers = r.get("want") or {}, bool(r.get("viewers"))
+                    for cmd in r.get("commands") or []:
+                        if cmd.get("id") not in self._done:       # never made twice
+                            self._done.append(cmd.get("id"))
+                            threading.Thread(target=self._command, args=(cmd,),
+                                             name="cloud-change", daemon=True).start()
                     have_days = r.get("have_days", True)
                     cloud_last = int(r.get("events_last_id") or 0)
                     # A new start id: the cloud restarted with an empty disk. Its
@@ -569,6 +687,7 @@ class Uplink:
                         if new:                     # only new rows move the mark on
                             pushed_id = new[-1]["id"]
                         missing = list(dict.fromkeys(missing + (r.get("missing") or [])))
+                        missing.sort(key=_photo_time, reverse=True)   # today's first
 
                 for name in missing[:6]:
                     path = os.path.join(photos.PHOTO_DIR, name)
@@ -636,10 +755,18 @@ class Uplink:
                 self.frames_sent.append(time.time())
 
 
+def _photo_time(name):
+    """Sort key for a photo path like 2026-10-22/cam9_phone_142730_512.jpg."""
+    m = re.search(r"_(\d{6})_(\d{3})", name)
+    return (name[:10], m.group(1) + m.group(2) if m else "")
+
+
 uplink = Uplink()
 
 
 def _install_office(app):
+    uplink._app = app                  # makes the changes sent from the cloud view
+
     @app.get("/api/cloud/uplink")
     def cloud_uplink():
         return jsonify(uplink.info())
