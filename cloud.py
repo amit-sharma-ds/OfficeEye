@@ -49,6 +49,10 @@ PASSWORD = os.environ.get("OFFICEEYE_PASSWORD", "")
 PUSH_TOKEN = os.environ.get("OFFICEEYE_PUSH_TOKEN", "")
 READ_ONLY = "This is the cloud view - change it on the office PC."
 OFFICE_GONE = 90          # seconds without a push before the office counts as away
+# New on every start of the cloud copy. Render's free plan starts with an
+# empty disk each time, so a new BOOT tells the office to send its last
+# three days again.
+BOOT = secrets.token_hex(8)
 
 
 # ================================================================ cloud side
@@ -359,6 +363,7 @@ def _install_cloud(app):
                         ("session:" + login["salt"] + login["hash"]).encode()).hexdigest()
         return jsonify({"ok": True, "want": store.want(),
                         "viewers": time.time() - store.viewer_at < 60,
+                        "boot": BOOT,
                         "events_last_id": events.max_id(),
                         "have_days": bool(events.camera_days("2000-01-01", "2999-12-31")[:1])})
 
@@ -514,6 +519,7 @@ class Uplink:
         import requests
         http = None
         pushed_id = None           # newest event id the cloud has
+        boot = None                # the cloud copy's start id, see BOOT
         have_days = True
         last_state = last_events = last_refresh = last_uptime = last_days = 0.0
         missing, last_alert, backoff = [], None, 0
@@ -535,12 +541,17 @@ class Uplink:
                     self.want, self.viewers = r.get("want") or {}, bool(r.get("viewers"))
                     have_days = r.get("have_days", True)
                     cloud_last = int(r.get("events_last_id") or 0)
-                    if pushed_id is None or cloud_last < pushed_id:
+                    # A new start id: the cloud restarted with an empty disk. Its
+                    # newest id says nothing then - today's alerts may have
+                    # reached it already - so everything is sent again.
+                    restarted = pushed_id is not None and r.get("boot") not in (None, boot)
+                    boot = r.get("boot") or boot
+                    if pushed_id is None or cloud_last < pushed_id or restarted:
                         # First contact, or the cloud lost its disk (a restart):
                         # send the last three days again.
                         start = events.first_id_since(
                             (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d"))
-                        pushed_id = max(cloud_last, (start or 1) - 1)
+                        pushed_id = (start or 1) - 1 if restarted else max(cloud_last, (start or 1) - 1)
                         last_days = 0.0
 
                 if pushed_id is not None and now - last_events >= 3:
