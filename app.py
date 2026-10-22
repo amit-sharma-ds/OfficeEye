@@ -20,6 +20,7 @@ import mongo
 import photos
 import scan
 import washroom                     # noqa: F401 - adds its detection to the pipeline
+import sleeping                     # head down / sleeping, added the same way
 from cameras import manager
 from detection import phone_watch_state, pipeline
 
@@ -83,6 +84,11 @@ def washroom_page():
 @app.get("/phone")
 def phone_page():
     return _page("phone.html", "phone", cameras=manager.listing(config.COUNT))
+
+
+@app.get("/sleeping")
+def sleeping_page():
+    return _page("sleeping.html", "sleeping", cameras=manager.listing(config.COUNT))
 
 
 @app.get("/cameras")
@@ -381,6 +387,51 @@ def api_phone():
     return jsonify({"events": events.recent(limit, "phone_use", day=_day_arg(),
                                             camera=request.args.get("camera"),
                                             with_photos=True)})
+
+
+def _sleep_rules_out():
+    rules, office = cloud.section("sleeping"), cloud.section("office")
+    return {"rules": rules, "office": {"open": office.get("open"), "close": office.get("close")},
+            "now": sleeping.watch_state(rules, office, datetime.now())}
+
+
+@app.get("/api/sleeping/rules")
+def api_sleeping_rules():
+    return jsonify(_sleep_rules_out())
+
+
+@app.post("/api/sleeping/rules")
+def api_sleeping_rules_save():
+    body = request.get_json(silent=True) or {}
+    patch = {}
+    try:
+        if "min_minutes" in body:
+            patch["min_minutes"] = min(max(float(body["min_minutes"]), 1), 120)
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "message": "Minutes must be a number"})
+    for key in ("watch_from", "watch_to"):
+        if key in body:
+            v = str(body[key] or "").strip()
+            if v and not _HM.match(v):
+                return jsonify({"ok": False, "message": "Times look like 09:30"})
+            patch[key] = v
+    if "breaks" in body:
+        breaks = []
+        for b in body["breaks"] or []:
+            if not (isinstance(b, (list, tuple)) and len(b) == 2 and all(_HM.match(str(x)) for x in b)):
+                return jsonify({"ok": False, "message": "Each break needs a start and an end, like 13:00 - 14:00"})
+            breaks.append([str(b[0]), str(b[1])])
+        patch["breaks"] = breaks
+    config.update("sleeping", patch)
+    return jsonify({"ok": True, "message": "Rules saved", **_sleep_rules_out()})
+
+
+@app.get("/api/sleeping/uses")
+def api_sleeping_uses():
+    """Every head-down spell of a day: from when to when, with a photo."""
+    uses = events.recent(1000, "head_down", day=_day_arg(),
+                         camera=request.args.get("camera") or None)
+    return jsonify({"uses": uses, "seconds": sum(r["meta"].get("seconds") or 0 for r in uses)})
 
 
 WASH_KINDS = ["washroom_visit", "washroom_in", "washroom_out", "washroom_door", "washroom_check"]

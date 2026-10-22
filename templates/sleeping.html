@@ -1,0 +1,196 @@
+{% extends "base.html" %}
+{% block title %}Sleeping / Head down{% endblock %}
+
+{% block body %}
+<h1>Sleeping / Head down</h1>
+<p class="sub">People on the counting cameras who sit still with their head down - on the desk,
+   on their arms or hanging forward - for a while. A quick look down at the desk does not
+   count. The minutes and the times are set under <b>Rules &amp; timing</b>.</p>
+
+<div class="tabs" role="tablist">
+  <button class="on" data-tab="use" role="tab">Head down</button>
+  <button data-tab="rules" role="tab">Rules &amp; timing</button>
+</div>
+
+<section data-pane="rules" hidden>
+  <div class="card">
+    <div class="card-head"><h2>When does it count?</h2><span class="hint-inline" id="r-now"></span></div>
+    <div class="rule">
+      <label for="r-min">Count it after</label>
+      <div><input type="number" id="r-min" min="1" max="120" step="1"> minutes of sitting still with the head down</div>
+      <p class="hint">The person has to stay still with the head no higher than the shoulders this
+         long. Somebody who looks up or gets moving starts again from zero.</p>
+    </div>
+    <div class="rule">
+      <label>Watch from</label>
+      <div><input type="time" id="r-from"> to <input type="time" id="r-to"></div>
+      <p class="hint">Empty = office hours (<span id="r-office"></span>, from Settings).</p>
+    </div>
+    <div class="rule">
+      <label>Breaks - head down allowed, not recorded</label>
+      <div id="r-breaks"></div>
+      <button class="ghost sm" id="r-add-break">+ Add a break</button>
+    </div>
+    <div class="row end">
+      <span class="status" id="r-status"></span>
+      <button class="primary" id="r-save">Save rules</button>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-head"><h2>How it is checked</h2></div>
+    <p class="hint">Every check, each person's picture is compared with the last one - somebody
+       typing or talking changes it, somebody asleep barely does. Only people who have been still
+       for a minute are looked at by a small pose model, which finds the head and shoulders.
+       Ceiling cameras see heads from above, so now and then somebody reading with the head bent
+       may be listed - the photo shows which.</p>
+  </div>
+</section>
+
+<section data-pane="use">
+<div class="stats three">
+  <div class="stat">
+    <div class="stat-k">Head down now</div>
+    <div class="stat-n" id="s-now">-</div>
+    <div class="stat-sub" id="s-now-sub">&nbsp;</div>
+  </div>
+  <div class="stat">
+    <div class="stat-k">Head down today</div>
+    <div class="stat-n" id="s-today">-</div>
+    <div class="stat-sub" id="s-today-sub">&nbsp;</div>
+  </div>
+  <div class="stat">
+    <div class="stat-k">Cameras checking</div>
+    <div class="stat-n" id="s-cams">-</div>
+    <div class="stat-sub">counting cameras online</div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head"><h2>Right now</h2></div>
+  <div class="chips wrap" id="now"><p class="empty">Nobody has their head down.</p></div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <h2>Head down - from when to when</h2>
+    <select id="cam" class="date">
+      <option value="">All cameras</option>
+      {% for cam in cameras %}<option value="{{ cam.id }}">{{ cam.name }}</option>{% endfor %}
+    </select>
+    <input type="date" id="day" class="date">
+  </div>
+  <div class="incidents" id="gallery"><p class="empty">Loading&hellip;</p></div>
+</div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ------------------------------------------------------------ tabs
+function showTab(name) {
+  $$('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === name));
+  $$('[data-pane]').forEach(p => p.hidden = p.dataset.pane !== name);
+  try { localStorage.setItem('pc-sleep-tab', name); } catch (e) {}
+}
+$$('.tabs button').forEach(b => b.onclick = () => showTab(b.dataset.tab));
+try { if (localStorage.getItem('pc-sleep-tab') === 'rules') showTab('rules'); } catch (e) {}
+
+// ------------------------------------------------------------ rules & timing
+function breakRow(a, b) {
+  const row = document.createElement('div');
+  row.className = 'break-row';
+  row.innerHTML = `<input type="time" value="${esc(a || '')}"> to <input type="time" value="${esc(b || '')}">` +
+                  ` <button class="ghost sm" title="Remove this break">Remove</button>`;
+  $('button', row).onclick = () => row.remove();
+  $('#r-breaks').appendChild(row);
+}
+function paintRules(r) {
+  const x = r.rules;
+  $('#r-min').value = x.min_minutes;
+  $('#r-from').value = x.watch_from || '';
+  $('#r-to').value = x.watch_to || '';
+  $('#r-office').textContent = `${r.office.open} to ${r.office.close}`;
+  $('#r-breaks').innerHTML = '';
+  (x.breaks || []).forEach(b => breakRow(b[0], b[1]));
+  $('#r-now').textContent = r.now.text;
+}
+$('#r-add-break').onclick = () => breakRow('13:00', '14:00');
+$('#r-save').onclick = async () => {
+  const breaks = $$('#r-breaks .break-row').map(row => $$('input', row).map(i => i.value))
+    .filter(b => b[0] || b[1]);
+  const r = await post('/api/sleeping/rules', {
+    min_minutes: $('#r-min').value, watch_from: $('#r-from').value, watch_to: $('#r-to').value, breaks,
+  });
+  $('#r-status').textContent = r.message;
+  if (r.ok) paintRules(r);
+};
+api('/api/sleeping/rules').then(paintRules).catch(() => {});
+
+// ------------------------------------------------------------ head down
+const day = $('#day'), cam = $('#cam');
+day.value = today();
+day.max = today();
+day.onchange = cam.onchange = () => load();
+let shown = [];
+
+const dur = (s) => s == null ? '' : s < 60 ? `${s} s`
+  : s < 3600 ? `${Math.floor(s / 60)} min ${String(s % 60).padStart(2, '0')} s`
+  : `${Math.floor(s / 3600)} h ${String(Math.floor(s % 3600 / 60)).padStart(2, '0')} min`;
+
+// From when to when: an open spell is still going if it was seen in the
+// last two minutes; otherwise the app stopped before its end was seen.
+function span(e) {
+  const m = e.meta || {};
+  const from = clock(m.started || e.ts);
+  if (m.ended) return {text: `${from} - ${clock(m.ended)}`, live: false};
+  const seen = new Date(m.last_seen || m.started);
+  const live = Date.now() - seen.getTime() < 120000;
+  return {text: `${from} - ${live ? 'now' : clock(m.last_seen) + ' (last seen)'}`, live};
+}
+
+async function load() {
+  const q = `day=${day.value}` + (cam.value ? `&camera=${encodeURIComponent(cam.value)}` : '');
+  const {uses, seconds} = await api('/api/sleeping/uses?' + q);
+  shown = uses;
+  if (!cam.value && day.value === today()) {
+    $('#s-today').textContent = uses.length;
+    $('#s-today-sub').textContent = uses.length ? `${dur(seconds)} in all` : 'nobody yet';
+    const live = uses.filter(e => span(e).live);
+    const by = {};
+    live.forEach(e => by[e.camera] = (by[e.camera] || 0) + 1);
+    $('#s-now').textContent = live.length;
+    $('#s-now').classList.toggle('warn', live.length > 0);
+    $('#s-now-sub').textContent = live.length ? `on ${plural(Object.keys(by).length, 'camera')}` : ' ';
+    $('#now').innerHTML = live.length ? Object.entries(by).map(([id, n]) =>
+      `<button data-id="${esc(id)}">${esc(names[id] || id)} <b>${n}</b></button>`).join('')
+      : '<p class="empty">Nobody has their head down.</p>';
+    $$('#now button').forEach(b => b.onclick = () => openLive(b.dataset.id, names[b.dataset.id]));
+  }
+  $('#gallery').innerHTML = uses.length ? uses.map((e, i) => {
+    const name = names[e.camera] || e.camera;
+    const m = e.meta || {}, sp = span(e), th = eventThumb(e);
+    return `<button class="incident amber ${sp.live ? 'live' : ''}" data-i="${i}">` +
+      (th ? `<img src="${esc(th)}" alt="">` : '<span class="noimg">no photo</span>') +
+      `<div class="inc-body"><b>${esc(name)}</b><span class="when">${esc(sp.text)}</span>` +
+      `<span>${sp.live ? 'head down now · ' : ''}${dur(m.seconds)}</span></div></button>`;
+  }).join('') : '<p class="empty">Nobody had their head down on this day.</p>';
+  $$('#gallery .incident').forEach(b => b.onclick = () => {
+    const e = shown[+b.dataset.i];
+    if (!eventThumb(e)) return;                       // no photo for this one
+    openPhotos(eventPhotos(e, names[e.camera] || e.camera), 0);
+  });
+}
+
+let loadedAt = 0;
+window.onStatus = (s) => {
+  const cams = Object.values(s.cameras).filter(c => c.group === 'count');
+  $('#s-cams').textContent = cams.filter(c => c.state === 'connected').length;
+  if (day.value === today() && Date.now() - loadedAt > 15000) {
+    loadedAt = Date.now();
+    load().catch(() => {});
+  }
+};
+loadedAt = Date.now();
+load().catch(() => {});
+</script>
+{% endblock %}

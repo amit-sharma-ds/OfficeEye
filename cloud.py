@@ -498,7 +498,7 @@ class Uplink:
             cams.append(c)
         cloud = config.get("cloud")
         body = {"status": st, "cameras": cams,
-                "settings": {k: config.get(k) for k in ("office", "detection", "photos")}}
+                "settings": {k: config.get(k) for k in ("office", "detection", "photos", "sleeping")}}
         if cloud.get("salt") and cloud.get("hash"):
             # Only a salted hash of the login password leaves this PC.
             body["login"] = {"salt": cloud["salt"], "hash": cloud["hash"],
@@ -544,7 +544,7 @@ class Uplink:
                     rows = list(new)
                     if now - last_refresh >= 30:
                         last_refresh = now
-                        rows += events.rows_of_day(["restricted_alert", "phone_use", "washroom_in"],
+                        rows += events.rows_of_day(["restricted_alert", "phone_use", "washroom_in", "head_down"],
                                                    datetime.now().strftime("%Y-%m-%d"))
                     if rows:
                         r = self._json(http, cfg, "/api/cloud/push/events", {"rows": rows})

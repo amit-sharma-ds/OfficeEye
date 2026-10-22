@@ -53,6 +53,13 @@ DEFAULTS = {
         "photo_every": 2,         # minutes between photos from one camera
         "sensitivity": "medium",  # low / medium / high
     },
+    # Head down / sleeping rules (Sleeping page -> Rules & timing, sleeping.py).
+    "sleeping": {
+        "min_minutes": 5,         # still with the head down this long to count
+        "watch_from": "",         # "" = when the office opens
+        "watch_to": "",           # "" = when it closes
+        "breaks": [],             # [["13:00", "14:00"], ...] not recorded
+    },
     # A copy of every record in MongoDB (mongo.py). The connection string is
     # MONGO_URI in the .env file - never here, never in the repository.
     "mongodb": {

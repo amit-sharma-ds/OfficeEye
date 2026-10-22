@@ -40,7 +40,8 @@ log = logging.getLogger("mongo")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_DB = "office_eye"
-CHANGING = ["restricted_alert", "phone_use", "washroom_visit", "washroom_in"]   # get photos / end times later
+CHANGING = ["restricted_alert", "phone_use", "washroom_visit", "washroom_in",
+            "head_down"]                                      # get photos / end times later
 
 
 class MongoSetupError(RuntimeError):

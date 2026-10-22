@@ -295,7 +295,8 @@ class PhoneUse(Detector):
 
     Outside the watch hours and in breaks nothing is recorded. When somebody
     starts counting, one photo is taken - at most one per camera every few
-    minutes, and only once per person per use."""
+    minutes, and only once per person per use. A use that starts inside that
+    gap gets its photo once the gap is over, if it is still going on."""
 
     key = "phone"
     title = "Phone use"
@@ -422,7 +423,7 @@ class PhoneUse(Detector):
                     old.remove(tr)
                 else:
                     tr = {"first": None, "last": 0.0, "hits": 0, "phone": None,
-                          "event": None, "saved": 0.0}
+                          "event": None, "saved": 0.0, "shot": False}
                 tr["box"] = person
                 if i in holders:
                     if tr["first"] is None or ts - tr["last"] > self.GAP:
@@ -447,22 +448,35 @@ class PhoneUse(Detector):
             new = [t for t in using if t["event"] is None]
             for t in new:
                 t["event"], t["saved"] = "writing", ts
-            shoot = bool(new) and ts - st["photo_at"] >= float(rules.get("photo_every", 2)) * 60
+            # Uses already recorded without a photo (they started inside the gap),
+            # pictured only in a check that sees the phone with them.
+            late = [t for t in using if t["event"] not in (None, "writing")
+                    and not t["shot"] and t["last"] == ts]
+            shoot = bool(new or late) and ts - st["photo_at"] >= float(rules.get("photo_every", 2)) * 60
             if shoot:
                 st["photo_at"] = ts
+                for t in new + late:
+                    t["shot"] = True
+            else:
+                late = []
             for t in using:
                 if t["event"] not in (None, "writing") and ts - t["saved"] >= 30:
                     t["saved"] = ts
                     keep.append((t["event"], t["first"], t["last"]))
             starts = [(t, t["first"]) for t in new]
-            targets = [t["box"] for t in new]
-            others = [t["box"] for t in tracks if all(t is not u for u in new)]
+            late_ids = [t["event"] for t in late]
+            shown = new + late
+            targets = [t["box"] for t in shown]
+            others = [t["box"] for t in tracks if all(t is not u for u in shown)]
             phones_now = list(st["phones"])
 
         shot = None
         if shoot:
             shot = photos.save(camera, "phone", frame, targets, others + phones_now,
                                colour=AMBER, ts=datetime.fromtimestamp(ts))
+        if shot:
+            for eid in late_ids:
+                events.update_meta(eid, {"photos": [shot]})
         for t, first in starts:
             meta = {"started": _iso(first), "last_seen": _iso(ts), "seconds": int(ts - first)}
             if shot:
@@ -485,7 +499,7 @@ class PhoneUse(Detector):
         """A use is over: note its record for the end time, forget it."""
         if t["event"] not in (None, "writing"):
             ends.append((t["event"], t["first"], t["last"]))
-        t.update(first=None, hits=0, phone=None, event=None)
+        t.update(first=None, hits=0, phone=None, event=None, shot=False)
 
     def overlay(self, camera, frame):
         with self._lock:
