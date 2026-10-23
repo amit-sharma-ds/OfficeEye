@@ -6,6 +6,11 @@
   <title>{% block title %}{% endblock %} - OfficeEye</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
   <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='icon.svg') }}">
+  <link rel="manifest" href="{{ url_for('static', filename='manifest.webmanifest') }}">
+  <link rel="apple-touch-icon" href="{{ url_for('static', filename='apple-touch-icon.png') }}">
+  <meta name="theme-color" content="#4f46e5">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="OfficeEye">
 </head>
 <body>
   <aside class="sidebar">
@@ -30,6 +35,8 @@
 
     <div class="foot">
       <button class="sound" id="sound" type="button"></button>
+      <button class="sound" id="install-app" type="button" hidden>Install app</button>
+      <button class="sound" id="phone-alerts" type="button" hidden>Phone alerts: off</button>
       <div class="engine" id="engine">Detection: starting&hellip;</div>
       <div id="clock"></div>
       {% if cloud_mode %}<a class="logout" href="/logout">Log out</a>{% endif %}
@@ -415,6 +422,73 @@
     }
     poll();
     setInterval(poll, 1500);
+
+    // ------------------------------------------------------------ app (PWA)
+    // Installable as an app, and phone alerts (web push) sent by the office
+    // PC - only on https or localhost, which is what browsers allow.
+    if ('serviceWorker' in navigator && window.isSecureContext) {
+      navigator.serviceWorker.register('/sw.js').then(setupAlerts).catch(() => {});
+    }
+    let installEvent = null;
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault();
+      installEvent = e;
+      $('#install-app').hidden = false;
+    });
+    $('#install-app').onclick = async () => {
+      if (!installEvent) return;
+      installEvent.prompt();
+      await installEvent.userChoice.catch(() => {});
+      installEvent = null;
+      $('#install-app').hidden = true;
+    };
+    window.addEventListener('appinstalled', () => { $('#install-app').hidden = true; });
+
+    function b64key(s) {
+      const raw = atob((s + '='.repeat((4 - s.length % 4) % 4)).replace(/-/g, '+').replace(/_/g, '/'));
+      return Uint8Array.from(raw, c => c.charCodeAt(0));
+    }
+    async function setupAlerts(reg) {
+      const btn = $('#phone-alerts');
+      if (!('PushManager' in window) || !('Notification' in window)) {
+        // iPhone: alerts work once the app is on the home screen (Share -> Add to Home Screen).
+        return;
+      }
+      btn.hidden = false;
+      const paint = async () => {
+        const sub = await reg.pushManager.getSubscription();
+        btn.textContent = sub ? 'Phone alerts: on' : 'Phone alerts: off';
+        btn.classList.toggle('off', !sub);
+        return sub;
+      };
+      await paint();
+      btn.onclick = async () => {
+        btn.disabled = true;
+        try {
+          const sub = await reg.pushManager.getSubscription();
+          if (sub) {
+            await post('/api/push/unsubscribe', {endpoint: sub.endpoint});
+            await sub.unsubscribe();
+            toast({title: 'Phone alerts', body: 'Off on this device.', kind: 'info'});
+          } else {
+            if (await Notification.requestPermission() !== 'granted') {
+              toast({title: 'Phone alerts', body: 'Notifications are blocked for this site - allow them in the browser settings.', kind: 'info'});
+              return;
+            }
+            const {key} = await api('/api/push/key');
+            const fresh = await reg.pushManager.subscribe({userVisibleOnly: true, applicationServerKey: b64key(key)});
+            const r = await post('/api/push/subscribe', {subscription: fresh.toJSON(),
+                                                         device: navigator.userAgent.slice(0, 80)});
+            toast({title: 'Phone alerts', body: r.message || 'On', kind: 'info'});
+          }
+        } catch (e) {
+          toast({title: 'Phone alerts', body: 'Could not turn them on here: ' + (e.message || e), kind: 'info'});
+        } finally {
+          btn.disabled = false;
+          paint();
+        }
+      };
+    }
   </script>
   {% block scripts %}{% endblock %}
 </body>

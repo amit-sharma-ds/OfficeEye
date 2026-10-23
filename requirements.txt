@@ -6,3 +6,4 @@ torch>=2.2
 av>=12.0
 requests>=2.31
 pymongo>=4.6
+pywebpush>=2.0
