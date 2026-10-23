@@ -545,12 +545,13 @@ class RestrictedArea(Detector):
     seconds. While the alert is open a few more photos are taken, so there is
     a clear picture of who it was.
 
-    Two guards against false alerts. An alert opens only when somebody is
-    seen in at least CONFIRM checks a few seconds apart, not on one frame.
-    And each camera slowly learns how the empty room looks: a weak "person"
-    that matches that picture - a cloth on a sofa, a coat on a chair - is
-    part of the room, not an intruder. Anybody the model is sure of always
-    counts, still or not."""
+    Two guards against false alerts. Somebody the model is sure of (SURE)
+    raises the alert at once; a weak sighting needs a second one within
+    CONFIRM_WITHIN seconds - long enough for a busy PC that checks the camera
+    only every few seconds. And each camera slowly learns how the empty room
+    looks: a weak "person" that matches that picture - a cloth on a sofa, a
+    coat on a chair - is part of the room, not an intruder. Anybody the model
+    is very sure of always counts, still or not."""
 
     key = "restricted"
     title = "Restricted area"
@@ -559,8 +560,9 @@ class RestrictedArea(Detector):
     CLEAR_AFTER = 5.0       # zone must look empty this long before it clears
     PHOTO_EVERY = 4.0
     MAX_PHOTOS = 4
-    CONFIRM = 2             # seen in this many checks ...
-    CONFIRM_WITHIN = 3.0    # ... within this many seconds before an alert opens
+    SURE = 0.5              # a person this certain raises the alert at once
+    CONFIRM = 2             # a weaker one must be seen in this many checks ...
+    CONFIRM_WITHIN = 15.0   # ... within this many seconds before an alert opens
     BG_WIDTH = 320          # the learnt room picture, pixels across
     BG_TIME = 180.0         # how slowly it learns (s): somebody walking in is not learnt
     STILL_MATCH = 0.9       # a box this like the room picture is part of the room ...
@@ -637,7 +639,8 @@ class RestrictedArea(Detector):
             st["inside"], st["outside"], st["zone"] = inside, outside, zone
             if n:
                 st["hits"] = [t for t in st["hits"] if ts - t <= self.CONFIRM_WITHIN] + [ts]
-            if n and (st["occupied"] or len(st["hits"]) >= self.CONFIRM):
+            sure = any(b[4] >= self.SURE for b in inside)
+            if n and (st["occupied"] or sure or len(st["hits"]) >= self.CONFIRM):
                 if not st["occupied"]:
                     st["occupied"], st["since"] = True, ts
                     if st["event"] and ts - st["cleared_at"] < self.ALERT_GAP:
@@ -829,6 +832,7 @@ class Pipeline:
     HEARTBEAT = 10.0        # look at a quiet restricted camera at least this often
     COUNT_GAP = 1.5         # never re-check a counting camera faster than this...
     WATCHED_GAP = 0.5       # ...unless somebody is watching it live
+    RESTRICTED_WAIT = 2.0   # longest a restricted camera waits behind counting (s)
     STALE = 6.0             # a frame this old means the camera stopped
     MOTION_LEVEL = 20       # grey-level change that counts as different
     MOTION_SHARE = {config.COUNT: 0.004,          # share of the picture that
@@ -1051,7 +1055,20 @@ class Pipeline:
         if due[0][0] == 0:
             # A restricted camera never waits behind a batch of counting ones.
             due = [d for d in due if d[0] == 0]
-        return due[:self._vision.batch]
+            return due[:self._vision.batch]
+        # ...nor long behind one already running: while there is a restricted
+        # camera, a counting batch is kept short enough to finish within
+        # RESTRICTED_WAIT seconds on this PC.
+        return due[:self._count_batch(groups)]
+
+    def _count_batch(self, groups):
+        batch = self._vision.batch
+        if config.RESTRICTED not in groups.values():
+            return batch
+        runs = list(self._runs)[-20:]
+        frames = sum(r[1] for r in runs)
+        per = sum(r[2] for r in runs) / frames if frames else 0.5
+        return max(1, min(batch, int(self.RESTRICTED_WAIT / max(per, 0.05))))
 
     def _analyse(self, picks):
         frames = [p[3] for p in picks]
