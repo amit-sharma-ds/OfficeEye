@@ -211,6 +211,31 @@ def api_alert_delete(event_id):
     return jsonify({"ok": True, "message": "Alert deleted"})
 
 
+# Records that can be deleted by hand, photos and all (the trash icon and
+# Select on the Phone use, Head down, Night vision and Washroom pages).
+DELETABLE = ("restricted_alert", "phone_use", "head_down", "night_activity",
+             "washroom_visit", "washroom_in", "washroom_out", "washroom_door")
+
+
+@app.post("/api/records/delete")
+def api_records_delete():
+    body = request.get_json(silent=True) or {}
+    try:
+        ids = [int(i) for i in body.get("ids") or []][:1000]
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "message": "Pick the records to delete"})
+    gone = 0
+    for event_id in ids:
+        ev = events.get(event_id)
+        if ev and ev["kind"] in DELETABLE:
+            meta = events.delete(event_id, ev["kind"])
+            if meta is not None:
+                photos.remove(meta.get("photos"))
+                gone += 1
+    return jsonify({"ok": True, "deleted": gone,
+                    "message": "{} record{} deleted".format(gone, "" if gone == 1 else "s")})
+
+
 @app.post("/api/alerts/delete")
 def api_alerts_delete():
     """Delete several restricted-area alerts and their photos at once

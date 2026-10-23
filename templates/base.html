@@ -423,6 +423,116 @@
     poll();
     setInterval(poll, 1500);
 
+    // ------------------------------------------------------------ deleting records with photos
+    // A trash icon on each photo (two separate clicks - a double-click does
+    // nothing) and Select -> tick several -> delete them together. A page
+    // wraps each card with delWrap() and calls refresh(ids) after drawing.
+    // On the cloud view the office PC deletes them.
+    const TRASH_ICON = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" ' +
+      'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+      '<path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/></svg>';
+    function delWrap(id, inner, cls) {
+      return `<div class="inc-wrap ${cls || ''}" data-id="${id}"><span class="inc-check" aria-hidden="true"></span>` +
+        inner + `<button class="inc-del" type="button" title="Delete this record and its photos"` +
+        ` aria-label="Delete">${TRASH_ICON}</button></div>`;
+    }
+    class DeleteList {
+      constructor(list, {reload, noun}) {
+        this.list = $(list);
+        this.reload = reload;
+        this.noun = noun || 'record';
+        this.selecting = false;
+        this.picked = new Set();
+        this.ids = [];
+        const head = this.list.closest('.card').querySelector('.card-head');
+        this.toggle = document.createElement('button');
+        this.toggle.className = 'ghost sm';
+        this.toggle.textContent = 'Select';
+        this.toggle.hidden = true;
+        head.insertBefore(this.toggle, head.querySelector('input[type=date]'));
+        this.bar = document.createElement('div');
+        this.bar.className = 'sel-bar';
+        this.bar.hidden = true;
+        this.bar.innerHTML = '<span class="sel-n">0 selected</span>' +
+          '<button class="ghost sm sel-all">Select all</button>' +
+          '<button class="danger sm sel-del" disabled>Delete selected</button>' +
+          '<button class="ghost sm sel-cancel">Cancel</button>';
+        const above = this.list.closest('.table-wrap') || this.list;
+        above.parentNode.insertBefore(this.bar, above);
+        this.toggle.onclick = () => { this.selecting = true; this.paint(); };
+        $('.sel-cancel', this.bar).onclick = () => this.end();
+        $('.sel-all', this.bar).onclick = () => {
+          if (this.picked.size === this.ids.length) this.picked.clear();
+          else this.ids.forEach(id => this.picked.add(id));
+          this.paint();
+        };
+        $('.sel-del', this.bar).onclick = (e) => this.confirm(e.currentTarget, () => [...this.picked]);
+        // Clicks are caught before the card's own: in Select a card is ticked,
+        // not opened; the trash icon deletes.
+        this.list.addEventListener('click', (e) => {
+          const wrap = e.target.closest('.inc-wrap');
+          if (!wrap || !this.list.contains(wrap)) return;
+          const del = e.target.closest('.inc-del');
+          if (!del && !this.selecting) return;
+          e.preventDefault();
+          e.stopPropagation();
+          if (del) return this.confirm(del, () => [+wrap.dataset.id]);
+          const id = +wrap.dataset.id;
+          this.picked.has(id) ? this.picked.delete(id) : this.picked.add(id);
+          this.paint();
+        }, true);
+      }
+      refresh(ids) {
+        this.ids = ids;
+        const shown = new Set(ids);
+        [...this.picked].forEach(id => shown.has(id) || this.picked.delete(id));
+        this.paint();
+      }
+      paint() {
+        this.bar.hidden = !this.selecting;
+        this.toggle.hidden = this.selecting || !this.ids.length;
+        this.list.classList.toggle('selecting', this.selecting);
+        $$('.inc-wrap', this.list).forEach(w => w.classList.toggle('picked', this.picked.has(+w.dataset.id)));
+        $('.sel-n', this.bar).textContent = `${this.picked.size} selected`;
+        const del = $('.sel-del', this.bar);
+        del.disabled = !this.picked.size;
+        if (!del.classList.contains('sure'))
+          del.textContent = this.picked.size ? `Delete ${plural(this.picked.size, this.noun)}` : 'Delete selected';
+        $('.sel-all', this.bar).textContent =
+          this.ids.length && this.picked.size === this.ids.length ? 'Select none' : 'Select all';
+      }
+      end() {
+        this.selecting = false;
+        this.picked.clear();
+        this.paint();
+      }
+      async confirm(btn, ids) {
+        if (btn.classList.contains('sure') && Date.now() - btn.armedAt < 700) return;
+        clearTimeout(btn.undoTimer);
+        const icon = btn.classList.contains('inc-del');
+        if (!btn.classList.contains('sure')) {
+          btn.armedAt = Date.now();
+          btn.classList.add('sure');
+          btn.innerHTML = icon ? `${TRASH_ICON}<span>Delete?</span>`
+            : `Click again to delete ${plural(ids().length, this.noun)}`;
+          btn.undoTimer = setTimeout(() => {
+            btn.classList.remove('sure');
+            if (icon) btn.innerHTML = TRASH_ICON; else this.paint();
+          }, 4000);
+          return;
+        }
+        btn.disabled = true;
+        const r = await post('/api/records/delete', {ids: ids()});
+        btn.classList.remove('sure');
+        btn.disabled = false;
+        if (r.ok) {
+          toast({title: 'Deleted', body: r.message, kind: 'info'});
+          if (!icon) this.end();
+        }
+        this.reload();
+      }
+    }
+
     // ------------------------------------------------------------ app (PWA)
     // Installable as an app, and phone alerts (web push) sent by the office
     // PC - only on https or localhost, which is what browsers allow.

@@ -387,6 +387,14 @@ table.uptime tr.down td:first-child { box-shadow: inset 3px 0 var(--red); }
 .inc-wrap.picked .inc-check { background: var(--brand); border-color: var(--brand); }
 .inc-wrap.picked .inc-check::after { display: block; }
 .selecting .inc-wrap.picked > .incident { outline: 2px solid var(--brand); outline-offset: -2px; }
+.sel-bar .sel-n { font-weight: 600; font-size: 13px; margin-right: auto; }
+/* the same on a table's photo (Washroom visits) */
+.inc-wrap.tbl { display: inline-block; vertical-align: middle; }
+.inc-wrap.tbl .inc-del, .inc-wrap.tbl .inc-check { top: 2px; left: 2px; }
+.inc-wrap.tbl .inc-del { height: 20px; min-width: 20px; padding: 0 3px; }
+.inc-wrap.tbl .inc-check { width: 18px; height: 18px; }
+.inc-wrap.tbl .inc-check::after { left: 4px; top: 0; width: 5px; height: 9px; }
+.selecting .inc-wrap.tbl.picked img { outline: 2px solid var(--brand); outline-offset: 1px; }
 .inc-body { display: flex; flex-direction: column; min-width: 0; }
 .inc-body b { font-size: 13.5px; }
 .inc-body span { color: var(--mute); font-size: 12.5px; }

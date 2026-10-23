@@ -128,6 +128,7 @@ api('/api/sleeping/rules').then(paintRules).catch(() => {});
 
 // ------------------------------------------------------------ head down
 const day = $('#day'), cam = $('#cam');
+const deleter = new DeleteList('#gallery', {reload: () => load().catch(() => {}), noun: 'record'});
 day.value = today();
 day.max = today();
 day.onchange = cam.onchange = () => load();
@@ -169,11 +170,12 @@ async function load() {
   $('#gallery').innerHTML = uses.length ? uses.map((e, i) => {
     const name = names[e.camera] || e.camera;
     const m = e.meta || {}, sp = span(e), th = eventThumb(e);
-    return `<button class="incident amber ${sp.live ? 'live' : ''}" data-i="${i}">` +
+    return delWrap(e.id, `<button class="incident amber ${sp.live ? 'live' : ''}" data-i="${i}">` +
       (th ? `<img src="${esc(th)}" alt="">` : '<span class="noimg">no photo</span>') +
       `<div class="inc-body"><b>${esc(name)}</b><span class="when">${esc(sp.text)}</span>` +
-      `<span>${sp.live ? 'head down now · ' : ''}${dur(m.seconds)}</span></div></button>`;
+      `<span>${sp.live ? 'head down now · ' : ''}${dur(m.seconds)}</span></div></button>`);
   }).join('') : '<p class="empty">Nobody had their head down on this day.</p>';
+  deleter.refresh(uses.map(e => e.id));
   $$('#gallery .incident').forEach(b => b.onclick = () => {
     const e = shown[+b.dataset.i];
     if (!eventThumb(e)) return;                       // no photo for this one

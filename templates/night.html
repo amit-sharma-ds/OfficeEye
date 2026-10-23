@@ -115,6 +115,7 @@ $('#r-save').onclick = async () => {
 
 // ------------------------------------------------------------ night activity
 const day = $('#day'), cam = $('#cam');
+const deleter = new DeleteList('#gallery', {reload: () => load(day.value).catch(() => {}), noun: 'record'});
 day.max = today();
 day.onchange = cam.onchange = () => load(day.value);
 let shown = [];
@@ -151,15 +152,16 @@ async function load(night) {
   $('#gallery').innerHTML = shown.length ? shown.map((e, i) => {
     const m = e.meta || {}, w = when(e), th = eventThumb(e);
     const [title, colour] = KIND[m.type || e.label] || [e.label, ''];
-    return `<button class="incident ${colour} ${w.live ? 'live' : ''}" data-i="${i}">` +
+    return delWrap(e.id, `<button class="incident ${colour} ${w.live ? 'live' : ''}" data-i="${i}">` +
       (th ? `<img src="${esc(th)}" alt="">` : '<span class="noimg">no photo</span>') +
       `<div class="inc-body"><b>${esc(names[e.camera] || e.camera)} · ${esc(title)}</b>` +
       `<span class="when">${esc(e.ts.slice(0, 10))} ${esc(w.text)}</span>` +
       `<span>${title === 'Person' ? (w.live ? 'still there · ' : '') + plural(m.people || 1, 'person') +
                 (m.seconds ? ' · ' + dur(m.seconds) : '') : ''}` +
       `${(m.photos || []).length ? (title === 'Person' ? ' · ' : '') + plural((m.photos || []).length, 'photo') : ''}</span>` +
-      `</div></button>`;
+      `</div></button>`);
   }).join('') : '<p class="empty">Nothing at night - all quiet.</p>';
+  deleter.refresh(shown.map(e => e.id));
   $$('#gallery .incident').forEach(b => b.onclick = () => {
     const e = shown[+b.dataset.i];
     if (!eventThumb(e)) return;

@@ -230,6 +230,8 @@ async function loadSince() {
 
 const day = $('#day');
 let dayRows = [];
+const deleter = day && new DeleteList('#visits', {noun: 'visit',
+  reload: () => { loadDay().catch(() => {}); loadSince().catch(() => {}); }});
 async function loadDay() {
   if (!day) return;
   const r = await api(`/api/washroom?day=${day.value}`);
@@ -249,9 +251,11 @@ async function loadDay() {
         `<td colspan="2"><span class="tag ${bad ? 'red' : 'green'}">${bad ? 'found ' + esc(e.label) : 'checked clean'}</span></td>` +
         `<td>${esc(m.note || '')}</td></tr>`;
     }
-    return `<tr class="${nobody(e) ? 'muted-row' : ''}"><td>${hm(m.at || e.ts)}</td><td>${img}</td>${camCell}` +
+    return `<tr class="${nobody(e) ? 'muted-row' : ''}"><td>${hm(m.at || e.ts)}</td>` +
+      `<td>${img ? delWrap(e.id, img, 'tbl') : ''}</td>${camCell}` +
       `<td>${esc(whatOf(e))}</td><td class="num">${dur(m.seconds)}</td><td></td></tr>`;
   }).join('') : '<tr><td colspan="6" class="empty">Nothing at the door on this day.</td></tr>';
+  deleter.refresh(dayRows.filter(e => e.kind !== 'washroom_check' && photoOf(e)).map(e => e.id));
   $$('#visits .wash-th').forEach(img => img.onclick = () => {
     const ev = dayRows[+img.dataset.i];
     openPhotos(eventPhotos(ev, camOf(ev)), 0);
