@@ -60,6 +60,14 @@ DEFAULTS = {
         "watch_to": "",           # "" = when it closes
         "breaks": [],             # [["13:00", "14:00"], ...] not recorded
     },
+    # Night watch (Night vision page, night.py): after the office has closed.
+    "night": {
+        "enabled": True,
+        "watch_from": "20:00",    # the night runs past midnight ...
+        "watch_to": "08:00",      # ... to this time next morning
+        "sensitivity": "medium",  # movement: low / medium / high
+        "motion_every": 5,        # minutes between movement records from one camera
+    },
     # A copy of every record in MongoDB (mongo.py). The connection string is
     # MONGO_URI in the .env file - never here, never in the repository.
     "mongodb": {

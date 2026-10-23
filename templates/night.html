@@ -1,0 +1,179 @@
+{% extends "base.html" %}
+{% block title %}Night vision{% endblock %}
+
+{% block body %}
+<h1>Night vision</h1>
+<p class="sub">After the office has closed, the counting cameras and the washroom-door camera
+   watch for anybody in the building: a <b>person</b>, any <b>movement</b> (even where it is too
+   dark to make out who), and <b>lights</b> switched on or off - each with photos. Most cameras
+   switch to infrared (black and white) in the dark; one without infrared sees nothing then.</p>
+
+<div class="tabs" role="tablist">
+  <button class="on" data-tab="use" role="tab">Night activity</button>
+  <button data-tab="rules" role="tab">Rules &amp; timing</button>
+</div>
+
+<section data-pane="rules" hidden>
+  <div class="card">
+    <div class="card-head"><h2>When does the night watch run?</h2><span class="hint-inline" id="r-now"></span></div>
+    <div class="rule">
+      <label><input type="checkbox" id="r-on"> Night watch on</label>
+    </div>
+    <div class="rule">
+      <label>Watch from</label>
+      <div><input type="time" id="r-from"> to <input type="time" id="r-to"> next morning</div>
+      <p class="hint">The office closes in the evening; anybody seen between these times is recorded.</p>
+    </div>
+    <div class="rule">
+      <label for="r-sens">Movement sensitivity</label>
+      <div><select id="r-sens">
+        <option value="low">Low - only big movement, fewer false records</option>
+        <option value="medium">Medium (recommended)</option>
+        <option value="high">High - small movement too; car lights through a window may count</option>
+      </select></div>
+    </div>
+    <div class="rule">
+      <label for="r-every">One movement record per camera at most every</label>
+      <div><input type="number" id="r-every" min="1" max="60" step="1"> minutes</div>
+      <p class="hint">A person is always recorded - this only keeps movement from flooding the list.
+         To keep a TV or a fan out, mark it with <b>Ignore areas</b> on the camera's live view.</p>
+    </div>
+    <div class="row end">
+      <span class="status" id="r-status"></span>
+      <button class="primary" id="r-save">Save rules</button>
+    </div>
+  </div>
+</section>
+
+<section data-pane="use">
+<div class="stats three">
+  <div class="stat" id="n-state-box">
+    <div class="stat-k">Night watch</div>
+    <div class="stat-n" id="n-state">-</div>
+    <div class="stat-sub" id="n-state-sub">&nbsp;</div>
+  </div>
+  <div class="stat">
+    <div class="stat-k">People seen this night</div>
+    <div class="stat-n" id="n-people">-</div>
+    <div class="stat-sub" id="n-people-sub">&nbsp;</div>
+  </div>
+  <div class="stat">
+    <div class="stat-k">Movement &amp; lights</div>
+    <div class="stat-n" id="n-moves">-</div>
+    <div class="stat-sub" id="n-moves-sub">&nbsp;</div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <h2>Night of</h2>
+    <span class="hint-inline" id="n-span"></span>
+    <select id="cam" class="date">
+      <option value="">All cameras</option>
+      {% for cam in cameras %}<option value="{{ cam.id }}">{{ cam.name }}</option>{% endfor %}
+    </select>
+    <input type="date" id="day" class="date">
+  </div>
+  <div class="incidents" id="gallery"><p class="empty">Loading&hellip;</p></div>
+</div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ------------------------------------------------------------ tabs
+function showTab(name) {
+  $$('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === name));
+  $$('[data-pane]').forEach(p => p.hidden = p.dataset.pane !== name);
+  try { localStorage.setItem('pc-night-tab', name); } catch (e) {}
+}
+$$('.tabs button').forEach(b => b.onclick = () => showTab(b.dataset.tab));
+try { if (localStorage.getItem('pc-night-tab') === 'rules') showTab('rules'); } catch (e) {}
+
+// ------------------------------------------------------------ rules & timing
+function paintRules(r) {
+  const x = r.rules;
+  $('#r-on').checked = x.enabled !== false;
+  $('#r-from').value = x.watch_from || '20:00';
+  $('#r-to').value = x.watch_to || '08:00';
+  $('#r-sens').value = x.sensitivity || 'medium';
+  $('#r-every').value = x.motion_every || 5;
+  $('#r-now').textContent = r.now.text;
+  const on = r.now.state === 'on';
+  $('#n-state').textContent = on ? 'Watching' : 'Off';
+  $('#n-state').classList.toggle('warn', on);
+  $('#n-state-sub').textContent = r.now.text;
+}
+$('#r-save').onclick = async () => {
+  const r = await post('/api/night/rules', {
+    enabled: $('#r-on').checked, watch_from: $('#r-from').value, watch_to: $('#r-to').value,
+    sensitivity: $('#r-sens').value, motion_every: $('#r-every').value,
+  });
+  $('#r-status').textContent = r.message;
+  if (r.ok) { paintRules(r); load().catch(() => {}); }
+};
+
+// ------------------------------------------------------------ night activity
+const day = $('#day'), cam = $('#cam');
+day.max = today();
+day.onchange = cam.onchange = () => load(day.value);
+let shown = [];
+const KIND = {person: ['Person', ''], movement: ['Movement', 'amber'],
+              'lights on': ['Lights on', 'blue'], 'lights off': ['Lights off', 'blue']};
+
+const dur = (s) => s == null ? '' : s < 60 ? `${s} s`
+  : s < 3600 ? `${Math.floor(s / 60)} min ${String(s % 60).padStart(2, '0')} s`
+  : `${Math.floor(s / 3600)} h ${String(Math.floor(s % 3600 / 60)).padStart(2, '0')} min`;
+
+function when(e) {
+  const m = e.meta || {};
+  if ((m.type || e.label) !== 'person') return {text: clock(m.started || e.ts), live: false};
+  const from = clock(m.started || e.ts);
+  if (m.ended) return {text: `${from} - ${clock(m.ended)}`, live: false};
+  const live = Date.now() - new Date(m.last_seen || m.started).getTime() < 90000;
+  return {text: `${from} - ${live ? 'now' : clock(m.last_seen) + ' (last seen)'}`, live};
+}
+
+async function load(night) {
+  const q = (night ? `night=${night}` : '') + (cam.value ? `&camera=${encodeURIComponent(cam.value)}` : '');
+  const r = await api('/api/night?' + q);
+  paintRules(r);
+  if (!night) day.value = r.night;
+  $('#n-span').textContent = `${r.from.replace('T', ' ')} to ${r.to.replace('T', ' ')}`;
+  shown = r.events;
+  const people = shown.filter(e => (e.meta.type || e.label) === 'person');
+  const rest = shown.length - people.length;
+  $('#n-people').textContent = people.length;
+  $('#n-people').classList.toggle('warn', people.length > 0);
+  $('#n-people-sub').textContent = people.length ? `latest at ${clock(people[0].meta.started || people[0].ts).slice(0, 5)}` : 'nobody';
+  $('#n-moves').textContent = rest;
+  $('#n-moves-sub').textContent = rest ? `${shown.filter(e => (e.meta.type || e.label) === 'movement').length} movement` : 'all quiet';
+  $('#gallery').innerHTML = shown.length ? shown.map((e, i) => {
+    const m = e.meta || {}, w = when(e), th = eventThumb(e);
+    const [title, colour] = KIND[m.type || e.label] || [e.label, ''];
+    return `<button class="incident ${colour} ${w.live ? 'live' : ''}" data-i="${i}">` +
+      (th ? `<img src="${esc(th)}" alt="">` : '<span class="noimg">no photo</span>') +
+      `<div class="inc-body"><b>${esc(names[e.camera] || e.camera)} · ${esc(title)}</b>` +
+      `<span class="when">${esc(e.ts.slice(0, 10))} ${esc(w.text)}</span>` +
+      `<span>${title === 'Person' ? (w.live ? 'still there · ' : '') + plural(m.people || 1, 'person') +
+                (m.seconds ? ' · ' + dur(m.seconds) : '') : ''}` +
+      `${(m.photos || []).length ? (title === 'Person' ? ' · ' : '') + plural((m.photos || []).length, 'photo') : ''}</span>` +
+      `</div></button>`;
+  }).join('') : '<p class="empty">Nothing at night - all quiet.</p>';
+  $$('#gallery .incident').forEach(b => b.onclick = () => {
+    const e = shown[+b.dataset.i];
+    if (!eventThumb(e)) return;
+    openPhotos(eventPhotos(e, names[e.camera] || e.camera), 0);
+  });
+}
+
+let loadedAt = Date.now();
+window.onStatus = () => {
+  if (Date.now() - loadedAt > 15000) {         // a visit going on gets its photos and times
+    loadedAt = Date.now();
+    load(day.value).catch(() => {});
+  }
+};
+load().catch(() => {});
+</script>
+{% endblock %}

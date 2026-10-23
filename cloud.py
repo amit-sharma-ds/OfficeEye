@@ -620,7 +620,7 @@ class Uplink:
         cloud = config.get("cloud")
         body = {"status": st, "cameras": cams,
                 "settings": {k: config.get(k) for k in ("office", "detection", "photos", "phone",
-                                                        "sleeping")}}
+                                                        "sleeping", "night")}}
         if cloud.get("salt") and cloud.get("hash"):
             # Only a salted hash of the login password leaves this PC.
             body["login"] = {"salt": cloud["salt"], "hash": cloud["hash"],
@@ -678,7 +678,8 @@ class Uplink:
                     rows, deleted = list(new), []
                     if now - last_refresh >= 30:
                         last_refresh = now
-                        rows += events.rows_of_day(["restricted_alert", "phone_use", "washroom_in", "head_down"],
+                        rows += events.rows_of_day(["restricted_alert", "phone_use", "washroom_in", "head_down",
+                                                    "night_activity"],
                                                    datetime.now().strftime("%Y-%m-%d"))
                         deleted = events.deleted_since()
                     if rows or deleted:

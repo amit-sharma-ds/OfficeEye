@@ -22,6 +22,7 @@ import photos
 import scan
 import washroom                     # noqa: F401 - adds its detection to the pipeline
 import sleeping                     # head down / sleeping, added the same way
+import night                        # night watch after office hours, the same way
 from cameras import manager
 from detection import phone_watch_state, pipeline
 
@@ -90,6 +91,12 @@ def phone_page():
 @app.get("/sleeping")
 def sleeping_page():
     return _page("sleeping.html", "sleeping", cameras=manager.listing(config.COUNT))
+
+
+@app.get("/night")
+def night_page():
+    cams = [c for c in manager.listing() if c.get("group") in night.NightWatch.groups]
+    return _page("night.html", "night", cameras=cams)
 
 
 @app.get("/cameras")
@@ -455,6 +462,60 @@ def api_sleeping_rules_save():
         patch["breaks"] = breaks
     config.update("sleeping", patch)
     return jsonify({"ok": True, "message": "Rules saved", **_sleep_rules_out()})
+
+
+def _night_rules_out():
+    rules, office = cloud.section("night"), cloud.section("office")
+    return {"rules": rules, "now": night.night_state(rules, office, datetime.now())}
+
+
+@app.get("/api/night/rules")
+def api_night_rules():
+    return jsonify(_night_rules_out())
+
+
+@app.post("/api/night/rules")
+def api_night_rules_save():
+    body = request.get_json(silent=True) or {}
+    patch = {}
+    try:
+        if "motion_every" in body:
+            patch["motion_every"] = min(max(float(body["motion_every"]), 1), 60)
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "message": "Minutes must be a number"})
+    for key in ("watch_from", "watch_to"):
+        if key in body:
+            v = str(body[key] or "").strip()
+            if not _HM.match(v):
+                return jsonify({"ok": False, "message": "Times look like 20:00"})
+            patch[key] = v
+    if "enabled" in body:
+        patch["enabled"] = bool(body["enabled"])
+    if body.get("sensitivity") in ("low", "medium", "high"):
+        patch["sensitivity"] = body["sensitivity"]
+    config.update("night", patch)
+    return jsonify({"ok": True, "message": "Night rules saved", **_night_rules_out()})
+
+
+@app.get("/api/night")
+def api_night():
+    """One night's records: from the watch start that evening to its end
+    the next morning. No date = tonight, or last night before the morning end."""
+    rules = cloud.section("night")
+    start, end = rules.get("watch_from") or "20:00", rules.get("watch_to") or "08:00"
+    now = datetime.now()
+    day = (request.args.get("night") or "").strip()
+    try:
+        first = datetime.strptime(day, "%Y-%m-%d") if day else \
+            datetime(now.year, now.month, now.day) - timedelta(days=1 if now.strftime("%H:%M") < end and start > end else 0)
+    except ValueError:
+        abort(400)
+    last = first + timedelta(days=1 if start > end else 0)
+    frm = "{}T{}".format(first.strftime("%Y-%m-%d"), start)
+    to = "{}T{}".format(last.strftime("%Y-%m-%d"), end)
+    rows = events.between(["night_activity"], frm, to, camera=request.args.get("camera") or None)
+    return jsonify({"night": first.strftime("%Y-%m-%d"), "from": frm, "to": to,
+                    "events": rows, **_night_rules_out()})
 
 
 @app.get("/api/sleeping/uses")
