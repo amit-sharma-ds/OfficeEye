@@ -20,6 +20,7 @@ keyframe so the picture is never smeared.
 """
 
 import logging
+import re
 import threading
 import time
 
@@ -343,4 +344,5 @@ def _friendly(exc):
         return "camera refused the connection - is RTSP enabled?"
     if "stream ended" in low:
         return "stream stopped sending video"
-    return text[:160]
+    # FFmpeg quotes the whole url - never show the camera password.
+    return re.sub(r"(\w+://[^:/@\s'\"]*:)[^@\s'\"]*@", r"\1***@", text)[:160]
