@@ -519,6 +519,9 @@ def api_night_rules_save():
         patch["enabled"] = bool(body["enabled"])
     if body.get("sensitivity") in ("low", "medium", "high"):
         patch["sensitivity"] = body["sensitivity"]
+    if "cameras_off" in body:
+        known = {c["id"] for c in config.cameras()}
+        patch["cameras_off"] = [str(c) for c in body["cameras_off"] or [] if str(c) in known][:200]
     config.update("night", patch)
     return jsonify({"ok": True, "message": "Night rules saved", **_night_rules_out()})
 

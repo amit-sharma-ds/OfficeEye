@@ -135,7 +135,8 @@ class NightWatch(Detector):
     def process(self, camera, frame, ts, seen):
         rules, office = self.rules()
         now = datetime.fromtimestamp(ts)
-        watching = night_state(rules, office, now)["state"] == "on"
+        watching = (night_state(rules, office, now)["state"] == "on" and
+                    camera not in (rules.get("cameras_off") or []))   # switched off for the night
         small = self._small(frame)
         bright = float(small.mean())
         with self._lock:

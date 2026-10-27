@@ -38,6 +38,14 @@
       <p class="hint">A person is always recorded - this only keeps movement from flooding the list.
          To keep a TV or a fan out, mark it with <b>Ignore areas</b> on the camera's live view.</p>
     </div>
+    <div class="rule">
+      <label>Cameras watched at night</label>
+      <div class="cam-checks" id="r-cams">
+        {% for cam in cameras %}<label><input type="checkbox" value="{{ cam.id }}" checked> {{ cam.name }}</label>{% endfor %}
+      </div>
+      <p class="hint">Untick a camera to leave it out at night - an outdoor or parking camera, say.
+         What it does in the day does not change.</p>
+    </div>
     <div class="row end">
       <span class="status" id="r-status"></span>
       <button class="primary" id="r-save">Save rules</button>
@@ -98,19 +106,26 @@ function paintRules(r) {
   $('#r-to').value = x.watch_to || '08:00';
   $('#r-sens').value = x.sensitivity || 'medium';
   $('#r-every').value = x.motion_every || 5;
+  if (!camsTouched) {                     // never undo ticks not saved yet
+    const off = new Set(x.cameras_off || []);
+    $$('#r-cams input').forEach(i => i.checked = !off.has(i.value));
+  }
   $('#r-now').textContent = r.now.text;
   const on = r.now.state === 'on';
   $('#n-state').textContent = on ? 'Watching' : 'Off';
   $('#n-state').classList.toggle('warn', on);
   $('#n-state-sub').textContent = r.now.text;
 }
+let camsTouched = false;
+$('#r-cams').onchange = () => { camsTouched = true; };
 $('#r-save').onclick = async () => {
   const r = await post('/api/night/rules', {
     enabled: $('#r-on').checked, watch_from: $('#r-from').value, watch_to: $('#r-to').value,
     sensitivity: $('#r-sens').value, motion_every: $('#r-every').value,
+    cameras_off: $$('#r-cams input').filter(i => !i.checked).map(i => i.value),
   });
   $('#r-status').textContent = r.message;
-  if (r.ok) { paintRules(r); load().catch(() => {}); }
+  if (r.ok) { camsTouched = false; paintRules(r); load().catch(() => {}); }
 };
 
 // ------------------------------------------------------------ night activity

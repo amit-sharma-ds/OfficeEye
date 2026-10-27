@@ -67,6 +67,7 @@ DEFAULTS = {
         "watch_to": "08:00",      # ... to this time next morning
         "sensitivity": "medium",  # movement: low / medium / high
         "motion_every": 5,        # minutes between movement records from one camera
+        "cameras_off": [],        # camera ids the night watch leaves out
     },
     # A copy of every record in MongoDB (mongo.py). The connection string is
     # MONGO_URI in the .env file - never here, never in the repository.
