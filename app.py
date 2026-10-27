@@ -525,23 +525,34 @@ def api_night_rules_save():
 
 @app.get("/api/night")
 def api_night():
-    """One night's records: from the watch start that evening to its end
-    the next morning. No date = tonight, or last night before the morning end."""
-    rules = cloud.section("night")
+    """One night's records: everything recorded during the watch that began
+    on that date - by the hours in force when it was recorded, so changing
+    the hours later hides nothing. No date = tonight, or last night before
+    the morning end. "from" / "to" are that night's hours as set now."""
+    rules, office = cloud.section("night"), cloud.section("office")
     start, end = rules.get("watch_from") or "20:00", rules.get("watch_to") or "08:00"
-    now = datetime.now()
     day = (request.args.get("night") or "").strip()
     try:
         first = datetime.strptime(day, "%Y-%m-%d") if day else \
-            datetime(now.year, now.month, now.day) - timedelta(days=1 if now.strftime("%H:%M") < end and start > end else 0)
+            datetime.strptime(night.night_of(rules, office, datetime.now()), "%Y-%m-%d")
     except ValueError:
         abort(400)
+    label = first.strftime("%Y-%m-%d")
     last = first + timedelta(days=1 if start > end else 0)
-    frm = "{}T{}".format(first.strftime("%Y-%m-%d"), start)
+    frm = "{}T{}".format(label, start)
     to = "{}T{}".format(last.strftime("%Y-%m-%d"), end)
-    rows = events.between(["night_activity"], frm, to, camera=request.args.get("camera") or None)
-    return jsonify({"night": first.strftime("%Y-%m-%d"), "from": frm, "to": to,
-                    "events": rows, **_night_rules_out()})
+
+    def night_of_row(r):
+        # Older records do not carry their night: they go by their time.
+        if r["meta"].get("night"):
+            return r["meta"]["night"]
+        back = start > end and r["ts"][11:16] < end
+        return (datetime.strptime(r["ts"][:10], "%Y-%m-%d") - timedelta(days=1 if back else 0)).strftime("%Y-%m-%d")
+
+    rows = events.between(["night_activity"], label, (first + timedelta(days=2)).strftime("%Y-%m-%d"),
+                          camera=request.args.get("camera") or None, limit=5000)
+    rows = [r for r in rows if night_of_row(r) == label]
+    return jsonify({"night": label, "from": frm, "to": to, "events": rows, **_night_rules_out()})
 
 
 @app.get("/sw.js")

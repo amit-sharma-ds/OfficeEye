@@ -22,7 +22,7 @@ movement.
 import json
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import cv2
 import numpy as np
@@ -49,6 +49,16 @@ def night_state(rules, office, now):
     if on:
         return {"state": "on", "text": "Watching until {}".format(end)}
     return {"state": "off", "text": "Starts at {} (until {} next morning)".format(start, end)}
+
+
+def night_of(rules, office, now):
+    """The date of the watch this moment belongs to: after midnight in a
+    20:00-08:00 watch, the evening before. Kept with every record, so that
+    changing the hours later never moves (or hides) what was recorded."""
+    start = rules.get("watch_from") or office.get("close") or "20:00"
+    end = rules.get("watch_to") or office.get("open") or "08:00"
+    back = start > end and now.strftime("%H:%M") < end
+    return (now - timedelta(days=1 if back else 0)).strftime("%Y-%m-%d")
 
 
 class NightWatch(Detector):
@@ -206,7 +216,8 @@ class NightWatch(Detector):
             if new_visit:
                 eid = self.emit(camera, "night_activity", n, "person",
                                 {"type": "person", "people": n, "started": _iso(ts),
-                                 "last_seen": _iso(ts), "seconds": 0, "photos": all_shots})
+                                 "last_seen": _iso(ts), "seconds": 0, "photos": all_shots,
+                                 "night": night_of(rules, office, now)})
                 with self._lock:
                     visit["event"] = eid
             elif visit["event"]:
@@ -219,7 +230,8 @@ class NightWatch(Detector):
         for kind, targets in records:
             shot = photos.save(camera, "night", frame, targets, people, colour=NIGHT, ts=now)
             self.emit(camera, "night_activity", 0, kind,
-                      {"type": kind, "started": _iso(ts), "photos": [shot] if shot else []})
+                      {"type": kind, "started": _iso(ts), "photos": [shot] if shot else [],
+                       "night": night_of(rules, office, now)})
         self._finish(ends)
         return None
 
