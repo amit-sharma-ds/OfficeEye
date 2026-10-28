@@ -1,0 +1,340 @@
+{% extends "base.html" %}
+{% block title %}Parking{% endblock %}
+
+{% block body %}
+<h1>Parking</h1>
+<p class="sub">The cars and bikes on the cameras that look at the parking: which vehicle came
+   when, how long it stood and when it left - each with a photo and a close-up for the number
+   plate. A vehicle only driving past is not recorded: it has to stand at one spot for a few
+   minutes first.</p>
+
+<div class="tabs" role="tablist">
+  <button class="on" data-tab="use" role="tab">Parking</button>
+  <button data-tab="rules" role="tab">Rules &amp; cameras</button>
+</div>
+
+<section data-pane="rules" hidden>
+  <div class="card">
+    <div class="card-head"><h2>How the parking is watched</h2></div>
+    <div class="rule">
+      <label><input type="checkbox" id="r-on"> Parking watch on</label>
+    </div>
+    <div class="rule">
+      <label>Cameras that look at the parking</label>
+      <div class="cam-checks" id="r-cams">
+        {% for cam in cameras %}<label><input type="checkbox" value="{{ cam.id }}"> {{ cam.name }}</label>{% endfor %}
+      </div>
+      <p class="hint">Tick the cameras that see where cars and bikes stand. What else these
+         cameras do (people count, night vision) does not change.</p>
+    </div>
+    <div class="rule">
+      <label for="r-min">Counts as parked after standing still for</label>
+      <div><input type="number" id="r-min" min="1" max="60" step="1"> minutes</div>
+      <p class="hint">A car that drives past, turns or looks for a place never stands still that
+         long, so it is not recorded. To keep a road or a neighbour's gate out, mark it with
+         <b>Ignore areas</b> on the camera's live view.</p>
+    </div>
+    <div class="row end">
+      <span class="status" id="r-status"></span>
+      <button class="primary" id="r-save">Save rules</button>
+    </div>
+  </div>
+</section>
+
+<section data-pane="use">
+<div class="stats four">
+  <div class="stat">
+    <div class="stat-k">Parked now</div>
+    <div class="stat-n" id="p-now">-</div>
+    <div class="stat-sub" id="p-now-sub">&nbsp;</div>
+  </div>
+  <div class="stat">
+    <div class="stat-k">Came this day</div>
+    <div class="stat-n" id="p-came">-</div>
+    <div class="stat-sub" id="p-came-sub">&nbsp;</div>
+  </div>
+  <div class="stat">
+    <div class="stat-k">Left this day</div>
+    <div class="stat-n" id="p-left">-</div>
+    <div class="stat-sub" id="p-left-sub">&nbsp;</div>
+  </div>
+  <div class="stat">
+    <div class="stat-k">Came after hours</div>
+    <div class="stat-n" id="p-late">-</div>
+    <div class="stat-sub" id="p-late-sub">&nbsp;</div>
+  </div>
+</div>
+
+<p class="empty" id="no-cams" hidden>No camera watches the parking yet - tick them under
+   <b>Rules &amp; cameras</b>.</p>
+<div class="wall big" id="wall">
+  {% for cam in cameras %}
+  <div class="tile" data-id="{{ cam.id }}" hidden>
+    <div class="shot" role="button" tabindex="0" aria-label="Watch {{ cam.name }} live">
+      <img alt="">
+      <span class="pill n" hidden></span>
+    </div>
+    <div class="meta">
+      <span class="nm">{{ cam.name }}</span>
+      <span class="st"><span class="dot off"></span><span class="tx">...</span></span>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+<section class="card" id="day-card">
+  <div class="card-head">
+    <h2>Vehicles in the parking through the day</h2>
+    <span class="hint-inline">vehicles that stood there in each hour</span>
+  </div>
+  <div class="hours" id="hours"></div>
+  <div class="hours-x" id="hours-x"></div>
+</section>
+
+<div class="card">
+  <div class="card-head">
+    <h2>Vehicles</h2>
+    <span class="hint-inline" id="p-span"></span>
+    <select id="type" class="date">
+      <option value="">Cars &amp; bikes</option>
+      <option value="car">Cars</option>
+      <option value="bike">Bikes</option>
+      <option value="cycle">Cycles</option>
+    </select>
+    <select id="cam" class="date">
+      <option value="">All cameras</option>
+      {% for cam in cameras %}<option value="{{ cam.id }}">{{ cam.name }}</option>{% endfor %}
+    </select>
+    <input type="date" id="day" class="date">
+  </div>
+  <div class="incidents" id="gallery"><p class="empty">Loading&hellip;</p></div>
+</div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ------------------------------------------------------------ tabs
+function showTab(name) {
+  $$('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === name));
+  $$('[data-pane]').forEach(p => p.hidden = p.dataset.pane !== name);
+  try { localStorage.setItem('pc-parking-tab', name); } catch (e) {}
+}
+$$('.tabs button').forEach(b => b.onclick = () => showTab(b.dataset.tab));
+try { if (localStorage.getItem('pc-parking-tab') === 'rules') showTab('rules'); } catch (e) {}
+
+// ------------------------------------------------------------ rules & cameras
+let watched = [];
+function paintRules(r) {
+  const x = r.rules;
+  $('#r-on').checked = x.enabled !== false;
+  $('#r-min').value = x.park_minutes || 2;
+  watched = x.enabled === false ? [] : (x.cameras || []);
+  if (!camsTouched) {                     // never undo ticks not saved yet
+    const on = new Set(x.cameras || []);
+    $$('#r-cams input').forEach(i => i.checked = on.has(i.value));
+  }
+  $$('#wall .tile').forEach(t => t.hidden = !watched.includes(t.dataset.id));
+  $$('#cam option').forEach(o => o.hidden = !!o.value && !watched.includes(o.value));
+  $('#no-cams').hidden = watched.length > 0;
+}
+let camsTouched = false;
+$('#r-cams').onchange = () => { camsTouched = true; };
+$('#r-save').onclick = async () => {
+  const r = await post('/api/parking/rules', {
+    enabled: $('#r-on').checked, park_minutes: $('#r-min').value,
+    cameras: $$('#r-cams input').filter(i => i.checked).map(i => i.value),
+  });
+  $('#r-status').textContent = r.message;
+  if (r.ok) { camsTouched = false; paintRules(r); load(day.value).catch(() => {}); }
+};
+
+// ------------------------------------------------------------ vehicles
+const day = $('#day'), cam = $('#cam'), type = $('#type');
+const deleter = new DeleteList('#gallery', {reload: () => load(day.value).catch(() => {}), noun: 'record'});
+day.max = today();
+day.onchange = cam.onchange = () => load(day.value);
+type.onchange = () => paint();
+const TYPE = {car: 'Car', bike: 'Bike', cycle: 'Cycle'};
+let data = null, shown = [], parkedBy = {};
+
+const dur = (s) => s == null ? '' : s < 60 ? `${s} s`
+  : s < 3600 ? `${Math.floor(s / 60)} min`
+  : `${Math.floor(s / 3600)} h ${String(Math.floor(s % 3600 / 60)).padStart(2, '0')} min`;
+const came = (e) => e.meta.started || e.ts;
+const went = (e) => e.meta.ended || e.meta.last_seen || e.ts;
+// Camera names straight from the page, so they show before the first status poll.
+const CAM_NAMES = {{ cameras|map(attribute='id')|list|tojson }}.reduce((o, id, i) =>
+  (o[id] = {{ cameras|map(attribute='name')|list|tojson }}[i], o), {});
+const camName = (id) => names[id] || CAM_NAMES[id] || id;
+// "09:15", or "27 Oct 19:40" when it is not on the day shown.
+const at = (iso) => iso.slice(0, 10) === data.day ? iso.slice(11, 16)
+  : new Date(iso).toLocaleDateString([], {day: 'numeric', month: 'short'}) + ' ' + iso.slice(11, 16);
+const isParked = (e) => data.parked.some(p => p.id === e.id);
+const count = (list) => {
+  const n = {car: 0, bike: 0, cycle: 0};
+  list.forEach(e => n[e.meta.type] = (n[e.meta.type] || 0) + 1);
+  return ['car', 'bike', 'cycle'].filter(k => n[k]).map(k => plural(n[k], k)).join(' · ') || 'none';
+};
+
+function photosOf(e) {
+  const name = camName(e.camera), out = [];
+  (e.meta.photos || []).forEach((shot, i) => {
+    const when = clock(shot.ts || e.ts).slice(0, 5);
+    out.push({src: '/photos/' + shot.full,
+              caption: i === 0 ? `${name} - parked, ${when}` : `${name} - gone, the empty spot at ${when}`});
+    (shot.crops || []).forEach(c => out.push({src: '/photos/' + c, caption: `${name} - close-up, ${when}`}));
+  });
+  return out;
+}
+
+async function load(d) {
+  const q = (d ? `day=${d}` : '') + (cam.value ? `&camera=${encodeURIComponent(cam.value)}` : '');
+  data = await api('/api/parking?' + q);
+  paintRules(data);
+  if (!d) day.value = data.day;
+  parkedBy = {};
+  data.parked.forEach(e => parkedBy[e.camera] = (parkedBy[e.camera] || 0) + 1);
+  paint();
+  paintTiles();
+}
+
+function paint() {
+  if (!data) return;
+  const all = data.records, start = data.day + 'T00:00:00';
+  const camesHere = all.filter(e => came(e) >= start);
+  const left = all.filter(e => e.meta.ended && e.meta.ended >= start);
+  const late = camesHere.filter(e => e.meta.after_hours);
+  $('#p-now').textContent = data.parked.length;
+  $('#p-now-sub').textContent = count(data.parked);
+  $('#p-came').textContent = camesHere.length;
+  $('#p-came-sub').textContent = count(camesHere);
+  $('#p-left').textContent = left.length;
+  $('#p-left-sub').textContent = left.length ? `last at ${at(left.map(went).sort().pop())}` : 'none';
+  $('#p-late').textContent = late.length;
+  $('#p-late').classList.toggle('warn', late.length > 0);
+  $('#p-late-sub').textContent = late.length
+    ? `latest at ${at(late.map(came).sort().pop())}` : `office ${data.office.open}-${data.office.close}`;
+  $('#p-span').textContent = plural(all.length, 'vehicle');
+  paintHours(all);
+
+  shown = all.filter(e => !type.value || e.meta.type === type.value)
+             .sort((a, b) => came(b).localeCompare(came(a)));
+  $('#gallery').innerHTML = shown.length ? shown.map((e, i) => {
+    const m = e.meta, here = isParked(e), th = eventThumb(e);
+    // Still parked: how long so far (the record itself is brought up to date only now and then).
+    const secs = here ? Math.max(0, Math.round((Date.now() - new Date(came(e))) / 1000)) : m.seconds;
+    const tags = [m.was_there ? 'was already here' : '', m.after_hours ? 'came after hours' : '']
+      .filter(Boolean).join(' · ');
+    const pic = th ? `<img src="${esc(th)}" alt="">`
+      : here && (m.box || []).length === 4
+        ? `<canvas class="live-crop" width="124" height="156" data-i="${i}" title="Live picture"></canvas>`
+        : '<span class="noimg">no photo</span>';
+    return delWrap(e.id, `<button class="incident ${here ? 'blue' : ''}" data-i="${i}">` + pic +
+      `<div class="inc-body"><b>${esc(camName(e.camera))} · ${esc(TYPE[m.type] || m.type)}</b>` +
+      `<span class="when">${esc(at(came(e)))} - ${here ? 'parked now' : esc(at(went(e)))}</span>` +
+      `<span>${esc(dur(secs))}${tags ? ' · ' + esc(tags) : ''}</span>` +
+      `</div></button>`);
+  }).join('') : `<p class="empty">${watched.length ? 'No vehicle parked on this day.' :
+                                   'No camera watches the parking yet.'}</p>`;
+  deleter.refresh(shown.map(e => e.id));
+  $$('#gallery .incident').forEach(b => b.onclick = () => {
+    const e = shown[+b.dataset.i];
+    const list = photosOf(e);
+    if (!list.length && $('canvas', b)) {               // no photo kept: the camera's picture now
+      list.push({src: `/frame/${encodeURIComponent(e.camera)}.jpg?w=1280&t=${Date.now()}`,
+                 caption: `${camName(e.camera)} - live now`});
+    }
+    if (list.length) openPhotos(list, 0);
+  });
+  paintLiveCrops().catch(() => {});
+}
+
+// A vehicle already there when the watch began has no photo of its coming:
+// its card shows a close-up cut from the camera's live picture instead -
+// nothing is saved for it. One picture per camera, fetched again each minute.
+const liveFrames = {};
+function liveFrame(cam) {
+  const f = liveFrames[cam];
+  if (!f || Date.now() - f.at > 60000) {
+    const img = new Image();
+    liveFrames[cam] = {at: Date.now(), ready: new Promise(ok => {
+      img.onload = () => ok(img);
+      img.onerror = () => ok(null);
+    })};
+    img.src = `/frame/${encodeURIComponent(cam)}.jpg?w=1280&overlay=0&caption=0&t=${Date.now()}`;
+  }
+  return liveFrames[cam].ready;
+}
+async function paintLiveCrops() {
+  for (const cv of $$('#gallery canvas.live-crop')) {
+    const e = shown[+cv.dataset.i], img = e && await liveFrame(e.camera);
+    if (!img) continue;
+    const [x1, y1, x2, y2] = e.meta.box, W = img.naturalWidth, H = img.naturalHeight;
+    let sw = (x2 - x1) * W * 1.25, sh = (y2 - y1) * H * 1.25;   // a little room around it
+    const want = cv.width / cv.height;
+    if (sw / sh > want) sh = sw / want; else sw = sh * want;
+    sw = Math.min(sw, W); sh = Math.min(sh, H);
+    const sx = Math.min(Math.max((x1 + x2) / 2 * W - sw / 2, 0), W - sw);
+    const sy = Math.min(Math.max((y1 + y2) / 2 * H - sh / 2, 0), H - sh);
+    cv.getContext('2d').drawImage(img, sx, sy, sw, sh, 0, 0, cv.width, cv.height);
+  }
+}
+
+// Vehicles that stood there in each hour of the day shown.
+function paintHours(all) {
+  const nowH = data.day === today() ? new Date().getHours() : -1;
+  const lastH = nowH >= 0 ? nowH : 23;
+  const per = [];
+  for (let h = 0; h <= lastH; h++) {
+    const a = `${data.day}T${String(h).padStart(2, '0')}:00:00`;
+    const b = `${data.day}T${String(h).padStart(2, '0')}:59:59`;
+    per.push(all.filter(e => came(e) <= b && (isParked(e) || went(e) >= a)).length);
+  }
+  const top = Math.max(1, ...per);
+  $('#hours').innerHTML = per.map((v, h) =>
+    `<div class="h ${h === nowH ? 'now' : ''}" title="${h}:00-${h + 1}:00 · ${plural(v, 'vehicle')}">` +
+    `<span class="v">${v || ''}</span>` +
+    `<div class="b" style="height:${v ? Math.max(2, Math.round(v / top * 100)) : 0}%"></div></div>`).join('');
+  $('#hours-x').innerHTML = per.map((_, h) => `<span>${h}</span>`).join('');
+}
+
+// ------------------------------------------------------------ live pictures
+function paintTiles(s) {
+  s = s || lastStatus;
+  $$('#wall .tile').forEach(tile => {
+    if (tile.hidden) return;
+    const n = $('.n', tile), id = tile.dataset.id, p = parkedBy[id] || 0;
+    n.hidden = false;
+    n.className = 'pill n ' + (p ? 'busy' : 'ok');
+    n.textContent = p ? `${p} parked` : 'no vehicle parked';
+    const c = s && s.cameras[id];
+    if (!c) return;
+    $('.dot', tile).className = 'dot ' + c.state;
+    $('.tx', tile).textContent = c.state === 'connected' ? 'watching the parking'
+      : c.state === 'off' ? 'no IP set' : c.state === 'connecting' ? 'connecting...' : 'offline';
+    const img = $('img', tile);
+    const key = c.state === 'connected' ? `${c.seq}-${c.ver}` : c.state;
+    if (img.dataset.key !== key && Date.now() - (+img.dataset.at || 0) > 5000) {
+      img.dataset.key = key;
+      img.dataset.at = Date.now();
+      img.src = `/frame/${encodeURIComponent(id)}.jpg?w=640&k=${encodeURIComponent(key)}`;
+    }
+  });
+}
+$$('#wall .tile .shot').forEach(el => el.onclick = () => {
+  const id = el.closest('.tile').dataset.id;
+  openLive(id, camName(id));
+});
+
+let loadedAt = Date.now();
+window.onStatus = (s) => {
+  paintTiles(s);
+  if (Date.now() - loadedAt > 30000) {        // new vehicles, ones that left, times
+    loadedAt = Date.now();
+    load(day.value).catch(() => {});
+  }
+};
+load().catch(() => {});
+</script>
+{% endblock %}

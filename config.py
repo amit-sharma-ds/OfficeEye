@@ -69,6 +69,12 @@ DEFAULTS = {
         "motion_every": 5,        # minutes between movement records from one camera
         "cameras_off": [],        # camera ids the night watch leaves out
     },
+    # Parking (Parking page, parking.py): cars and bikes on the cameras that see it.
+    "parking": {
+        "enabled": True,
+        "cameras": [],            # camera ids that look at the parking
+        "park_minutes": 2,        # standing at one spot this long = parked, not passing by
+    },
     # A copy of every record in MongoDB (mongo.py). The connection string is
     # MONGO_URI in the .env file - never here, never in the repository.
     "mongodb": {

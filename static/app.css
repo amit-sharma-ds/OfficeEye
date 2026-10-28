@@ -355,7 +355,7 @@ table.uptime tr.down td:first-child { box-shadow: inset 3px 0 var(--red); }
 .incident:hover { background: #fafafa; }
 .incident.amber { border-left-color: var(--amber); }
 .incident.live { background: var(--red-bg); }
-.incident img, .incident .noimg {
+.incident img, .incident .noimg, .incident canvas.live-crop {
   width: 62px; height: 78px; object-fit: cover; border-radius: 6px;
   background: #e5e7eb; flex: none; font-size: 11px; color: var(--faint);
   display: flex; align-items: center; justify-content: center;

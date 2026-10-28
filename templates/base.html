@@ -28,6 +28,7 @@
         <span class="badge amber" id="phone-badge" hidden></span></a>
       <a href="/sleeping"   class="{{ 'on' if page == 'sleeping' }}">Sleeping / Head down</a>
       <a href="/night"      class="{{ 'on' if page == 'night' }}">Night vision</a>
+      <a href="/parking"    class="{{ 'on' if page == 'parking' }}">Parking</a>
       <a href="/cameras"    class="{{ 'on' if page == 'cameras' }}">Cameras</a>
       <a href="/running-time" class="{{ 'on' if page == 'running' }}">Camera running time</a>
       <a href="/settings"   class="{{ 'on' if page == 'settings' }}">Settings</a>
@@ -67,15 +68,17 @@
         <b>Ignore areas - <span id="ig-name"></span></b>
         <button class="x" data-close aria-label="Close">&times;</button>
       </div>
-      <p class="hint">Drag a box over anything that gets mistaken for a person - a
-         poster, a TV, a mannequin. Nothing whose middle is inside a box is ever
-         counted. Click a box to remove it.</p>
+      <p class="hint">Click around anything that gets mistaken for a person or a
+         vehicle - a poster, a TV, a mannequin, a road - corner by corner, and click
+         the first corner again to close the shape. Drag a corner to move it. Nothing
+         whose middle is inside a shape is ever counted. Click "ignored ×" on a shape to remove it.</p>
       <div class="zone-wrap">
         <img id="ig-img" alt="">
         <canvas id="ig-canvas"></canvas>
       </div>
       <div class="row end">
         <span class="status" id="ig-status"></span>
+        <button class="ghost" id="ig-undo">Undo point</button>
         <button class="ghost" id="ig-clear">Clear all</button>
         <button class="primary" id="ig-save">Save</button>
       </div>
@@ -206,16 +209,14 @@
     $('#live').onclose = () => { liveId = null; $('#live-img').src = 'data:,'; };
     $('#live-ignore').onclick = () => editIgnore(liveId, $('#live-name').textContent);
 
-    // Ignore areas: boxes dragged over the picture, stored as 4-corner shapes.
-    let igId = null, igBoxes = [], igDraft = null, igHit = -1;
+    // Ignore areas: shapes clicked corner by corner over the picture.
+    let igId = null, igShapes = [], igDraft = [], igDrag = null;
     const igCv = () => $('#ig-canvas'), igImg = () => $('#ig-img');
     function editIgnore(id, name) {
       igId = id;
       const cam = (lastStatus && lastStatus.cameras[id]) || {};
-      igBoxes = (cam.ignore || []).map(p => {
-        const xs = p.map(q => q[0]), ys = p.map(q => q[1]);
-        return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
-      });
+      igShapes = (cam.ignore || []).map(p => p.map(q => [q[0], q[1]]));
+      igDraft = [];
       $('#ig-name').textContent = name || id;
       $('#ig-status').textContent = '';
       igImg().onload = () => { igCv().width = igImg().clientWidth;
@@ -231,53 +232,72 @@
     function igDraw() {
       const cv = igCv(), g = cv.getContext('2d'), W = cv.width, H = cv.height;
       g.clearRect(0, 0, W, H);
-      const box = (b, dashed) => {
-        const [x1, y1, x2, y2] = [Math.min(b[0], b[2]), Math.min(b[1], b[3]),
-                                  Math.max(b[0], b[2]), Math.max(b[1], b[3])];
-        g.fillStyle = 'rgba(17, 24, 39, .45)';
-        g.fillRect(x1 * W, y1 * H, (x2 - x1) * W, (y2 - y1) * H);
-        g.setLineDash(dashed ? [6, 4] : []);
-        g.strokeStyle = '#f9fafb'; g.lineWidth = 2;
-        g.strokeRect(x1 * W, y1 * H, (x2 - x1) * W, (y2 - y1) * H);
+      const shape = (pts, open) => {
+        g.beginPath();
+        pts.forEach(([x, y], i) => i ? g.lineTo(x * W, y * H) : g.moveTo(x * W, y * H));
+        if (!open) {
+          g.closePath();
+          g.fillStyle = 'rgba(17, 24, 39, .45)';
+          g.fill();
+        }
+        g.setLineDash(open ? [6, 4] : []);
+        g.strokeStyle = '#f9fafb'; g.lineWidth = 2; g.stroke();
         g.setLineDash([]);
-        if (!dashed) {
-          g.fillStyle = '#f9fafb'; g.font = '600 12px Segoe UI, sans-serif';
-          g.fillText('ignored  ×', x1 * W + 6, y1 * H + 16);
+        pts.forEach(([x, y], i) => {            // corners; the first one of a new shape is bigger
+          g.beginPath();
+          g.arc(x * W, y * H, open && !i ? 7 : 4, 0, Math.PI * 2);
+          g.fillStyle = open && !i ? '#6366f1' : '#f9fafb';
+          g.fill();
+        });
+        if (!open) {
+          const [cx, cy] = igMid(pts);
+          g.fillStyle = '#f9fafb'; g.font = '600 12px Segoe UI, sans-serif'; g.textAlign = 'center';
+          g.fillText('ignored  ×', cx * W, cy * H + 4);
+          g.textAlign = 'start';
         }
       };
-      igBoxes.forEach(b => box(b, false));
-      if (igDraft) box(igDraft, true);
+      igShapes.forEach(s => shape(s, false));
+      if (igDraft.length) shape(igDraft, true);
     }
-    const igInside = (p) => igBoxes.findIndex(b =>
-      p[0] >= b[0] && p[0] <= b[2] && p[1] >= b[1] && p[1] <= b[3]);
+    // The middle of a shape, where its "ignored ×" label sits.
+    const igMid = (pts) => [pts.reduce((s, q) => s + q[0], 0) / pts.length,
+                            pts.reduce((s, q) => s + q[1], 0) / pts.length];
     $('#ig-canvas').onpointerdown = (e) => {
-      const p = igAt(e);
-      igCv().setPointerCapture(e.pointerId);
-      igHit = igInside(p);
-      igDraft = [p[0], p[1], p[0], p[1]];
+      const p = igAt(e), W = igCv().width, H = igCv().height;
+      const close = (q) => Math.hypot((q[0] - p[0]) * W, (q[1] - p[1]) * H) < 10;
+      if (igDraft.length >= 3 && close(igDraft[0])) {     // back at the first corner: the shape is done
+        igShapes.push(igDraft); igDraft = []; igDraw();
+        return;
+      }
+      for (let s = 0; s < igShapes.length; s++) {         // on a corner: drag it
+        const i = igShapes[s].findIndex(close);
+        if (i >= 0) { igDrag = [s, i]; igCv().setPointerCapture(e.pointerId); return; }
+      }
+      if (!igDraft.length) {                              // on a shape's "ignored ×": remove it
+        const s = igShapes.findIndex(poly => {
+          const [cx, cy] = igMid(poly);
+          return Math.abs((cx - p[0]) * W) < 45 && Math.abs((cy - p[1]) * H) < 14;
+        });
+        if (s >= 0) { igShapes.splice(s, 1); igDraw(); return; }
+      }
+      igDraft.push(p);
+      igDraw();
     };
     $('#ig-canvas').onpointermove = (e) => {
-      if (!igDraft) return;
-      const p = igAt(e);
-      igDraft[2] = p[0]; igDraft[3] = p[1];
+      if (!igDrag) return;
+      igShapes[igDrag[0]][igDrag[1]] = igAt(e);
       igDraw();
     };
-    $('#ig-canvas').onpointerup = () => {
-      if (!igDraft) return;
-      const [a, b, c, d] = igDraft;
-      const big = Math.abs(c - a) > 0.015 && Math.abs(d - b) > 0.015;
-      if (big) {
-        igBoxes.push([Math.min(a, c), Math.min(b, d), Math.max(a, c), Math.max(b, d)]);
-      } else if (igHit >= 0) {
-        igBoxes.splice(igHit, 1);              // a click on a box removes it
-      }
-      igDraft = null; igHit = -1;
-      igDraw();
-    };
-    $('#ig-clear').onclick = () => { igBoxes = []; igDraw(); };
+    $('#ig-canvas').onpointerup = () => { igDrag = null; };
+    $('#ig-undo').onclick = () => { igDraft.pop(); igDraw(); };
+    $('#ig-clear').onclick = () => { igShapes = []; igDraft = []; igDraw(); };
     $('#ig-save').onclick = async () => {
-      const shapes = igBoxes.map(([x1, y1, x2, y2]) => [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]);
-      const r = await post(`/api/cameras/${encodeURIComponent(igId)}/ignore`, {ignore: shapes});
+      if (igDraft.length && igDraft.length < 3) {
+        $('#ig-status').textContent = 'A shape needs at least 3 corners';
+        return;
+      }
+      if (igDraft.length) { igShapes.push(igDraft); igDraft = []; }   // a shape not closed yet is kept too
+      const r = await post(`/api/cameras/${encodeURIComponent(igId)}/ignore`, {ignore: igShapes});
       if (lastStatus && lastStatus.cameras[igId]) lastStatus.cameras[igId].ignore = r.ignore;
       closeModal($('#ignore'));
     };

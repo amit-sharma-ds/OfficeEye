@@ -63,11 +63,12 @@ def register(cls):
 
 class Seen:
     """What the model found in one frame."""
-    __slots__ = ("people", "phones")
+    __slots__ = ("people", "phones", "vehicles")
 
-    def __init__(self, people=None, phones=None):
+    def __init__(self, people=None, phones=None, vehicles=None):
         self.people = people or []      # [(x1, y1, x2, y2, score), ...]
         self.phones = phones or []
+        self.vehicles = vehicles or []  # [(x1, y1, x2, y2, score, "car"), ...] - parking.py
 
 
 class Detector:
@@ -100,6 +101,12 @@ class Detector:
         looked at again soon, even if the picture barely changes."""
         return False
 
+    def waiting(self, camera):
+        """True while something here waits for a second look that the
+        routine re-check (every count_refresh seconds) can give - so that
+        re-check is not put behind every camera with movement."""
+        return False
+
     def stats(self):
         return {}
 
@@ -122,6 +129,8 @@ class Vision:
 
     PERSON = 0     # COCO: person      - other models are looked up by name
     PHONE = 67     # COCO: cell phone
+    VEHICLES = ("car", "truck", "bus", "motorcycle", "bicycle")   # for the parking
+    VEHICLE_CONF = 0.25        # bikes close in a row score low; parking.py waits for a still one
 
     def __init__(self, cfg):
         import torch
@@ -143,6 +152,7 @@ class Vision:
         ids = {str(v).lower(): int(k) for k, v in self.model.names.items()}
         self.person = ids.get("person", self.PERSON)
         self.phone = ids.get("cell phone", ids.get("phone", self.PHONE))
+        self.vehicles = {ids[n]: n for n in self.VEHICLES if n in ids}
         self.configure(cfg)
         self.detect([np.zeros((480, 640, 3), np.uint8)])       # warm up
 
@@ -161,6 +171,10 @@ class Vision:
         self.conf = float(cfg.get("confidence", 0.4))
         self.classes = [self.person, self.phone] if cfg.get("phone", True) \
             else [self.person]
+        park = config.get("parking")
+        if park.get("enabled", True) and park.get("cameras"):
+            # Vehicles in the same pass: the parking costs no extra model run.
+            self.classes += list(self.vehicles)
         sens = config.get("phone").get("sensitivity", "medium")
         self.phone_conf = self.PHONE_CONF.get(sens, self.PHONE_CONF["medium"])
 
@@ -182,6 +196,9 @@ class Vision:
                     if int(k) == self.person:
                         if s >= self.conf:          # the people cutoff, as before
                             seen.people.append(box)
+                    elif int(k) in self.vehicles:
+                        if s >= self.VEHICLE_CONF:
+                            seen.vehicles.append(box + (self.vehicles[int(k)],))
                     elif s >= self.phone_conf:
                         seen.phones.append(box)
             out.append(seen)
@@ -790,7 +807,7 @@ class Smoother:
             tracks[:] = live + [t for t in tracks if t["misses"] and
                                 not any(_same_person(t["box"], l["box"]) for l in live)]
             counted = [t["box"] for t in tracks if self._counts(t)]
-        return Seen(counted, seen.phones)
+        return Seen(counted, seen.phones, seen.vehicles)
 
     def _counts(self, t):
         return t["hits"] >= 2 or t["best"] >= self.CONFIRM_SCORE
@@ -811,7 +828,7 @@ class Smoother:
 
 class Track:
     """What the pipeline remembers about one camera."""
-    __slots__ = ("seq", "ts", "frame_ts", "small", "seen", "ver", "busy")
+    __slots__ = ("seq", "ts", "frame_ts", "small", "seen", "ver", "busy", "waiting")
 
     def __init__(self):
         self.seq = -1           # frame last looked at
@@ -821,6 +838,7 @@ class Track:
         self.seen = None
         self.ver = 0            # bumps on every result, for image caches
         self.busy = False
+        self.waiting = False    # a detection waits on the routine re-check
 
 
 def _small(frame):
@@ -986,7 +1004,8 @@ class Pipeline:
             return all(cv2.pointPolygonTest(p, mid, False) < 0 for p in polys)
 
         return Seen([b for b in seen.people if keep(b)],
-                    [b for b in seen.phones if keep(b)])
+                    [b for b in seen.phones if keep(b)],
+                    [b for b in seen.vehicles if keep(b)])
 
     def group(self, camera):
         return self._group_map().get(camera, config.COUNT)
@@ -1046,7 +1065,7 @@ class Pipeline:
                 if not self._moved(tr.small, small, group):
                     continue                                # nothing changed
             elif tr.seen is not None and not tr.busy and not restricted:
-                rank = 3                                    # routine refresh: last
+                rank = 2 if tr.waiting else 3               # routine refresh: last
             due.append((rank, -age, cam, frame, fts, seq, group, small))
 
         if not due:
@@ -1101,6 +1120,7 @@ class Pipeline:
                 tr.small = small if small is not None else _small(frame)
                 tr.ver += 1
             busy = group == config.COUNT and self._smooth.busy(cam)
+            waiting = False
             for det in self._detectors:
                 if group not in det.groups:
                     continue
@@ -1116,7 +1136,8 @@ class Pipeline:
                                label=ev.get("label", ""), value=ev.get("value", 0),
                                meta=ev.get("meta"))
                 busy = busy or det.busy(cam)
-            tr.busy = busy
+                waiting = waiting or det.waiting(cam)
+            tr.busy, tr.waiting = busy, waiting
 
     # ---------- what the rest of the app reads ----------
 
