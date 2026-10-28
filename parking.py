@@ -8,15 +8,22 @@ On the cameras ticked under Parking -> Rules & cameras:
    for the minutes set is parked. One that drives past, turns or looks for
    a place never stands still that long, so it is never recorded.
 2. One record per vehicle per stay: when it came, kept up to date while it
-   stands there, when it left and how long it stood. Photos only of what
-   happens: one (with a close-up for the number plate) from the moment it
-   came - the driver getting off - and one from the moment it was first
-   missing at its spot - somebody driving it off. A vehicle already there
-   when the watch began has no photo of its coming.
-3. Missed now and then (somebody standing in front of it, the evening
+   stands there, when it left and how long it stood.
+3. Photos only of what happens - never again and again of a vehicle just
+   standing there:
+   - came: the moment it stopped at its spot (a bike's rider is still on
+     it), with a close-up for the number plate;
+   - getting out: nobody can be seen inside a car or truck as it parks, so
+     the first time somebody shows up next to it in the minutes after it
+     stopped, a photo with a close-up of them;
+   - gone: the moment it was first missing at its spot.
+   A vehicle already there when the watch began has no photo of its coming.
+4. Missed now and then (somebody standing in front of it, the evening
    light) is not gone: only after LEAVE_CHECKS checks and LEAVE_AFTER
-   seconds without it.
-4. After a restart the vehicles still standing take up their own records
+   seconds without it. One "gone" that is back at the same spot, looking
+   the same, within REOPEN seconds never left: its record is opened again
+   and the photo of it going dropped - no new record, no new photos.
+5. After a restart the vehicles still standing take up their own records
    again rather than getting new ones; records whose vehicle went meanwhile
    get the time it was last seen as their end.
 
@@ -74,6 +81,10 @@ class Parking(Detector):
     RESUME = 600.0             # after a restart, open records are taken up this long
     SAVE_EVERY = 60.0          # "last seen" written at most this often
     SNAP_QUALITY = 90          # a moment kept for a photo, until it is known to be needed
+    OUT_WINDOW = 300.0         # people getting out of a car that came are looked for this long (s)
+    NEAR = 0.5                 # ... within this share of the car's size around it
+    REOPEN = 600.0             # back at the same spot this soon after "leaving": it never left
+    SAME_LOOK = 0.7            # ... if it looks the same (grey picture match, -1 to 1)
 
     def __init__(self):
         super().__init__()
@@ -108,9 +119,32 @@ class Parking(Detector):
 
     @staticmethod
     def _track(v, ts):
+        # came / gone / out: a moment kept for a photo; out is "done" once taken
         return {"box": v, "first_box": v, "first": ts, "last": ts, "hits": 1, "misses": 0,
                 "kinds": Counter([v[5]]), "event": None, "photos": [], "saved": 0.0,
-                "was_there": False, "came": None, "gone": None}
+                "was_there": False, "came": None, "gone": None, "out": None, "look": None}
+
+    @staticmethod
+    def _look(frame, box):
+        """A tiny grey picture of a vehicle, to tell it from another one at
+        the same spot later."""
+        x1, y1, x2, y2 = (int(v) for v in box[:4])
+        crop = frame[max(0, y1):max(0, y2), max(0, x1):max(0, x2)]
+        if crop.size == 0:
+            return None
+        g = cv2.resize(cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY), (16, 16),
+                       interpolation=cv2.INTER_AREA).astype(np.float32).ravel()
+        g -= g.mean()
+        n = float(np.linalg.norm(g))
+        return g / n if n > 1e-6 else None
+
+    @classmethod
+    def _near(cls, car, people):
+        """People next to a car - getting out of it, or just out."""
+        x1, y1, x2, y2 = car[:4]
+        mx, my = (x2 - x1) * cls.NEAR, (y2 - y1) * cls.NEAR
+        return [p for p in people
+                if p[0] < x2 + mx and p[2] > x1 - mx and p[1] < y2 + my and p[3] > y1 - my]
 
     def _stamp(self, at):
         """A photo's time. Its milliseconds count up, so two photos from one
@@ -118,19 +152,25 @@ class Parking(Detector):
         self._shot_n = (self._shot_n + 1) % 1000
         return datetime.fromtimestamp(at).replace(microsecond=self._shot_n * 1000)
 
-    def _photo(self, camera, moment, came):
+    def _photo(self, camera, moment, what):
         """The photo of a moment kept earlier: the vehicle marked when it came,
-        its spot when it went."""
-        jpg, at, box = moment
-        img = cv2.imdecode(np.frombuffer(jpg, np.uint8), cv2.IMREAD_COLOR)
+        the people next to it when they got out, its spot when it went."""
+        img = cv2.imdecode(np.frombuffer(moment["jpg"], np.uint8), cv2.IMREAD_COLOR)
         if img is None:
             return None
-        if came:
-            return photos.save(camera, "parking", img, [box], [], colour=TEAL, ts=self._stamp(at))
-        h, w = img.shape[:2]
-        x1, y1, x2, y2 = box[:4]
-        spot = [[x1 / w, y1 / h], [x2 / w, y1 / h], [x2 / w, y2 / h], [x1 / w, y2 / h]]
-        return photos.save(camera, "parking", img, [], [], zone=spot, colour=TEAL, ts=self._stamp(at))
+        box, at = moment["box"], self._stamp(moment["at"])
+        if what == "came":
+            shot = photos.save(camera, "parking", img, [box], [], colour=TEAL, ts=at)
+        elif what == "out":
+            shot = photos.save(camera, "parking", img, moment["people"], [box], colour=TEAL, ts=at)
+        else:
+            h, w = img.shape[:2]
+            x1, y1, x2, y2 = box[:4]
+            spot = [[x1 / w, y1 / h], [x2 / w, y1 / h], [x2 / w, y2 / h], [x1 / w, y2 / h]]
+            shot = photos.save(camera, "parking", img, [], [], zone=spot, colour=TEAL, ts=at)
+        if shot:
+            shot["what"] = what
+        return shot
 
     @staticmethod
     def _open_records(camera):
@@ -167,9 +207,11 @@ class Parking(Detector):
         orphans = [] if known else self._open_records(camera)
         h, w = frame.shape[:2]
         need = max(0.5, float(rules.get("park_minutes", 2))) * 60
-        new, keep, ends, lost, snaps = [], [], [], [], []
+        new, keep, ends, lost, snaps, back, outs = [], [], [], [], [], [], []
         with self._lock:
-            st = self._state.setdefault(camera, {"tracks": [], "since": ts, "orphans": orphans})
+            st = self._state.setdefault(camera, {"tracks": [], "since": ts, "orphans": orphans,
+                                                 "ended": []})
+            st["ended"] = [e for e in st["ended"] if ts - e["at"] <= self.REOPEN]
             tracks, found = st["tracks"], self._vehicles(seen)
             # Best overlaps first, over all vehicles at once: in a tight row of
             # bikes each one keeps its own place rather than a neighbour's.
@@ -186,6 +228,8 @@ class Parking(Detector):
                 t, v = tracks[i], found[j]
                 t.update(box=v, last=ts, misses=0, hits=t["hits"] + 1, gone=None)
                 t["kinds"][v[5]] += 1
+                if t["event"] is not None:
+                    t["look"] = self._look(frame, v)
                 if t["event"] is None and _iou(t["first_box"], v) < self.STILL:
                     t.update(first=ts, first_box=v, hits=1)      # still moving: the clock starts again
                     if not t["was_there"]:
@@ -206,10 +250,24 @@ class Parking(Detector):
                         st["orphans"].remove(r)
                         m = r["meta"]
                         t.update(event=r["id"], photos=list(m.get("photos") or []), saved=ts,
-                                 was_there=bool(m.get("was_there")),
-                                 first=self._ts_of(m.get("started")) or ts)
+                                 was_there=bool(m.get("was_there")), out="done",
+                                 first=self._ts_of(m.get("started")) or ts, look=self._look(frame, v))
                         keep.append((t["event"], t["first"], ts))   # seen again just now
                         break
+                if t["event"] is None:
+                    # Back at a spot it "left" a few minutes ago, looking the same:
+                    # it never left (missed a while) - its record goes on.
+                    look = self._look(frame, v)
+                    for e in st["ended"]:
+                        if KINDS.get(e["kind"]) == KINDS.get(v[5]) and _iou(e["box"], v) >= self.SAME_SPOT \
+                                and look is not None and e["look"] is not None \
+                                and float(np.dot(look, e["look"])) >= self.SAME_LOOK:
+                            st["ended"].remove(e)
+                            t.update(event=e["event"], first=e["first"], photos=e["photos"],
+                                     was_there=e["was_there"], saved=ts, hits=2, look=look, out="done")
+                            t["kinds"] = e["kinds"]
+                            back.append((t, e["gone"]))
+                            break
                 if t["event"] is None and not t["was_there"]:
                     snaps.append((t, "came"))
                 tracks.append(t)
@@ -229,21 +287,36 @@ class Parking(Detector):
                 elif t["event"] not in (None, "new") and not t["misses"] and ts - t["saved"] >= self.SAVE_EVERY:
                     t["saved"] = ts
                     keep.append((t["event"], t["first"], t["last"]))
+                # A car or truck that came and stands still: the first people next
+                # to it in the minutes after are the ones getting out.
+                if t["out"] is None and not t["was_there"] and not t["misses"] and t["hits"] >= 2 \
+                        and KINDS.get(t["kinds"].most_common(1)[0][0]) == "car" \
+                        and ts - t["first"] <= self.OUT_WINDOW:
+                    near = self._near(t["box"], seen.people)
+                    if near:
+                        t["out"] = "taking"
+                        snaps.append((t, "out", near))
         if snaps:
             # The moment is kept (as a jpg, small) - a photo is made of it only
             # if the vehicle turns out to have parked, or to have gone.
             ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), self.SNAP_QUALITY])
-            for t, what in snaps:
-                t[what] = (buf.tobytes(), ts, t["box"]) if ok else None
+            for t, what, *people in snaps:
+                t[what] = {"jpg": buf.tobytes(), "at": ts, "box": t["box"],
+                           "people": people[0] if people else []} if ok else None
+                if what == "out":
+                    outs.append(t)
 
         for t in new:
             box = t["box"]
-            shot = self._photo(camera, t["came"], True) if t["came"] else None
+            shots = [self._photo(camera, t["came"], "came") if t["came"] else None]
+            if isinstance(t["out"], dict):          # got out before it counted as parked
+                shots.append(self._photo(camera, t["out"], "out"))
+                t["out"] = "done"
             t["came"] = None
             kind = t["kinds"].most_common(1)[0][0]
             meta = {"type": KINDS.get(kind, "car"), "kind": kind,
                     "started": _iso(t["first"]), "last_seen": _iso(t["last"]),
-                    "seconds": int(t["last"] - t["first"]), "photos": [shot] if shot else [],
+                    "seconds": int(t["last"] - t["first"]), "photos": [s for s in shots if s],
                     "box": [round(box[0] / w, 4), round(box[1] / h, 4),
                             round(box[2] / w, 4), round(box[3] / h, 4)],
                     "after_hours": not office_open(office, datetime.fromtimestamp(t["first"])),
@@ -251,13 +324,32 @@ class Parking(Detector):
             eid = self.emit(camera, "parking", 1, meta["type"], meta)
             with self._lock:
                 t["event"], t["photos"], t["saved"] = eid, meta["photos"], ts
+        for t in outs:                              # got out of a car parked already
+            if t["event"] not in (None, "new") and isinstance(t["out"], dict):
+                shot = self._photo(camera, t["out"], "out")
+                t["out"] = "done"
+                if shot:
+                    t["photos"] = t["photos"] + [shot]
+                    events.update_meta(t["event"], {"photos": t["photos"]})
         for eid, first, last in keep:
             events.update_meta(eid, {"last_seen": _iso(last), "seconds": int(last - first)})
+        for t, gone in back:                        # never left: open again, drop its "gone" photo
+            events.update_meta(t["event"], {"ended": None, "photos": t["photos"],
+                                            "last_seen": _iso(ts), "seconds": int(ts - t["first"])})
+            if gone:
+                photos.remove([gone])
         for t in ends:
             # The moment it was first missing at its spot.
-            shot = self._photo(camera, t["gone"], False) if t["gone"] else None
+            before = list(t["photos"])
+            shot = self._photo(camera, t["gone"], "gone") if t["gone"] else None
             t["gone"] = None
-            t["photos"] = t["photos"] + ([shot] if shot else [])
+            t["photos"] = before + ([shot] if shot else [])
+            if t["event"] not in (None, "new"):
+                with self._lock:            # kept a while, in case it shows up there again
+                    st["ended"].append({"event": t["event"], "box": t["box"], "at": ts,
+                                        "kind": t["kinds"].most_common(1)[0][0], "kinds": t["kinds"],
+                                        "look": t["look"], "first": t["first"], "photos": before,
+                                        "gone": shot, "was_there": t["was_there"]})
         self._finish(ends)
         for r in lost:                 # gone while the app was not running
             m = r["meta"]

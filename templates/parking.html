@@ -177,13 +177,16 @@ const count = (list) => {
   return ['car', 'bike', 'cycle'].filter(k => n[k]).map(k => plural(n[k], k)).join(' · ') || 'none';
 };
 
+const SHOT = {came: 'came', out: 'getting out', gone: 'gone'};
 function photosOf(e) {
   const name = camName(e.camera), out = [];
   (e.meta.photos || []).forEach((shot, i) => {
     const when = clock(shot.ts || e.ts).slice(0, 5);
-    out.push({src: '/photos/' + shot.full,
-              caption: i === 0 ? `${name} - parked, ${when}` : `${name} - gone, the empty spot at ${when}`});
-    (shot.crops || []).forEach(c => out.push({src: '/photos/' + c, caption: `${name} - close-up, ${when}`}));
+    // Older photos do not say what they show: the first is its coming, unless it was already there.
+    const what = shot.what || (i === 0 && !e.meta.was_there ? 'came' : 'gone');
+    out.push({src: '/photos/' + shot.full, caption: `${name} - ${SHOT[what] || what}, ${when}`});
+    (shot.crops || []).forEach(c => out.push({src: '/photos/' + c,
+      caption: `${name} - close-up of the ${what === 'out' ? 'person' : 'vehicle'}, ${when}`}));
   });
   return out;
 }
