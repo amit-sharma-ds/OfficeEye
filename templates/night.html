@@ -4,9 +4,10 @@
 {% block body %}
 <h1>Night vision</h1>
 <p class="sub">After the office has closed, the counting cameras and the washroom-door camera
-   watch for anybody in the building: a <b>person</b>, any <b>movement</b> (even where it is too
-   dark to make out who), and <b>lights</b> switched on or off - each with photos. Most cameras
-   switch to infrared (black and white) in the dark; one without infrared sees nothing then.</p>
+   watch for anybody in the building: a <b>person</b> seen by the cameras is recorded with
+   photos. Most cameras switch to infrared (black and white) in the dark; one without
+   infrared sees nothing then. Movement and lights can be recorded too (Rules &amp; timing),
+   but insects at the lens, car lights and the dawn set those off far more often than people.</p>
 
 <div class="tabs" role="tablist">
   <button class="on" data-tab="use" role="tab">Night activity</button>
@@ -25,6 +26,13 @@
       <p class="hint">The office closes in the evening; anybody seen between these times is recorded.</p>
     </div>
     <div class="rule">
+      <label><input type="checkbox" id="r-moves"> Also record movement and lights</label>
+      <p class="hint">Off: only a person seen by the cameras is recorded. On: any movement
+         and lights switched on or off are recorded as well - at night insects flying past
+         the lens, car lights and the dawn set these off, so expect many more photos.</p>
+    </div>
+    <div id="r-move-opts">
+    <div class="rule">
       <label for="r-sens">Movement sensitivity</label>
       <div><select id="r-sens">
         <option value="low">Low - only big movement, fewer false records</option>
@@ -37,6 +45,7 @@
       <div><input type="number" id="r-every" min="1" max="60" step="1"> minutes</div>
       <p class="hint">A person is always recorded - this only keeps movement from flooding the list.
          To keep a TV or a fan out, mark it with <b>Ignore areas</b> on the camera's live view.</p>
+    </div>
     </div>
     <div class="rule">
       <label>Cameras watched at night</label>
@@ -102,6 +111,8 @@ try { if (localStorage.getItem('pc-night-tab') === 'rules') showTab('rules'); } 
 function paintRules(r) {
   const x = r.rules;
   $('#r-on').checked = x.enabled !== false;
+  $('#r-moves').checked = !!x.movement;
+  $('#r-move-opts').hidden = !x.movement;
   $('#r-from').value = x.watch_from || '20:00';
   $('#r-to').value = x.watch_to || '08:00';
   $('#r-sens').value = x.sensitivity || 'medium';
@@ -118,9 +129,11 @@ function paintRules(r) {
 }
 let camsTouched = false;
 $('#r-cams').onchange = () => { camsTouched = true; };
+$('#r-moves').onchange = () => { $('#r-move-opts').hidden = !$('#r-moves').checked; };
 $('#r-save').onclick = async () => {
   const r = await post('/api/night/rules', {
-    enabled: $('#r-on').checked, watch_from: $('#r-from').value, watch_to: $('#r-to').value,
+    enabled: $('#r-on').checked, movement: $('#r-moves').checked,
+    watch_from: $('#r-from').value, watch_to: $('#r-to').value,
     sensitivity: $('#r-sens').value, motion_every: $('#r-every').value,
     cameras_off: $$('#r-cams input').filter(i => !i.checked).map(i => i.value),
   });

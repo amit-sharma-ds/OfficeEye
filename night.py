@@ -1,11 +1,16 @@
 """Night watch: after the office has closed, the counting cameras and the
 washroom-door camera watch for anybody in the building.
 
-Three things are recorded, each with photos:
+What is recorded, with photos:
 
 1. A person - the model sees somebody in two checks a few seconds apart.
    One record per visit: when it started, when the person was last seen,
    and up to four photos.
+
+Only when switched on under Rules & timing ("movement", off by default -
+on a real night insects at the lens, car lights and the dawn switch-over
+set these off far more often than people do):
+
 2. Movement - the picture changes where nothing should move, even when the
    model cannot make out a person (a dark corner, an infrared picture). At
    most one record per camera every few minutes, with the moving part marked.
@@ -161,11 +166,12 @@ class NightWatch(Detector):
             return None
 
         people = [b for b in seen.people if not self._part_of_room(b, small, bg, frame.shape)]
+        moves = bool(rules.get("movement", False))       # movement and lights recorded too?
         light = None
-        if before is not None and abs(bright - before) >= self.LIGHT_JUMP:
+        if moves and before is not None and abs(bright - before) >= self.LIGHT_JUMP:
             light = "lights on" if bright > before else "lights off"
         moving = None
-        if light is None and prev is not None and prev.shape == small.shape:
+        if moves and light is None and prev is not None and prev.shape == small.shape:
             changed = cv2.absdiff(prev, small) > self.LEVEL
             with self._lock:
                 ignore = self._ignore_mask(camera, small.shape, st)

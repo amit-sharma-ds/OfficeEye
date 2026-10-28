@@ -543,6 +543,8 @@ def api_night_rules_save():
             patch[key] = v
     if "enabled" in body:
         patch["enabled"] = bool(body["enabled"])
+    if "movement" in body:
+        patch["movement"] = bool(body["movement"])
     if body.get("sensitivity") in ("low", "medium", "high"):
         patch["sensitivity"] = body["sensitivity"]
     if "cameras_off" in body:

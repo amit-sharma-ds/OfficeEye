@@ -65,6 +65,8 @@ DEFAULTS = {
         "enabled": True,
         "watch_from": "20:00",    # the night runs past midnight ...
         "watch_to": "08:00",      # ... to this time next morning
+        "movement": False,        # also movement and lights records - at night insects at
+                                  # the lens, car lights and dawn set these off, not people
         "sensitivity": "medium",  # movement: low / medium / high
         "motion_every": 5,        # minutes between movement records from one camera
         "cameras_off": [],        # camera ids the night watch leaves out
