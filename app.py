@@ -1,5 +1,6 @@
 """Web app: pages, the JSON API they talk to, and the video endpoints."""
 
+import hashlib
 import json
 import logging
 import os
@@ -42,6 +43,26 @@ logging.getLogger("werkzeug").setLevel(logging.WARNING)   # one line per image i
 log = logging.getLogger("app")
 
 PORT = int(os.environ.get("PORT", 8000))      # Render and the like set PORT
+
+
+def _code_version():
+    """A short fingerprint of the app's own files. It changes when new code
+    is running (not on a plain restart); open pages - the installed app on
+    the PC and on phones too - see it in /api/status and reload themselves."""
+    base = os.path.dirname(os.path.abspath(__file__))
+    h = hashlib.sha1()
+    for folder, ends in ((base, (".py",)),
+                         (os.path.join(base, "templates"), (".html",)),
+                         (os.path.join(base, "static"), (".js", ".css", ".webmanifest"))):
+        for name in sorted(os.listdir(folder)):
+            if name.endswith(ends):
+                with open(os.path.join(folder, name), "rb") as fh:
+                    h.update(name.encode())
+                    h.update(fh.read())
+    return h.hexdigest()[:12]
+
+
+APP_VERSION = _code_version()
 
 app = Flask(__name__)
 app.config["TEMPLATES_AUTO_RELOAD"] = True
@@ -145,9 +166,8 @@ def settings_page():
 
 @app.get("/api/status")
 def api_status():
-    if cloud.CLOUD:
-        return jsonify(cloud.store.status_payload())
-    return jsonify(_status_payload())
+    body = cloud.store.status_payload() if cloud.CLOUD else _status_payload()
+    return jsonify(dict(body, version=APP_VERSION))
 
 
 def _status_payload():

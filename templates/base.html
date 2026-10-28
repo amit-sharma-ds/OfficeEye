@@ -408,6 +408,21 @@
         : `Cloud view - changes here are made on the office PC. It sent data ${ago < 5 ? 'just now' : ago + ' s ago'}.`;
     }
 
+    // New code running (the office PC or the cloud copy was updated): load
+    // it - in a browser tab and in the installed app alike - but never in the
+    // middle of something: not while a window is open or a box is typed in.
+    let appVersion = null, appOutdated = false;
+    function newVersion(v) {
+      if (!v) return false;
+      if (appVersion === null) appVersion = v;
+      if (v !== appVersion) appOutdated = true;
+      const busy = $$('.modal').some(m => !m.hidden) ||
+        ['INPUT', 'TEXTAREA', 'SELECT'].includes((document.activeElement || {}).tagName);
+      if (!appOutdated || busy) return false;
+      location.reload();
+      return true;
+    }
+
     async function poll() {
       let s;
       try { s = await api('/api/status'); } catch (e) {
@@ -415,6 +430,7 @@
         return;
       }
       if (s.login_required) { location.href = '/login'; return; }
+      if (newVersion(s.version)) return;
       if (s.cloud) paintCloud(s.cloud);
       lastStatus = s;
       names = {};
