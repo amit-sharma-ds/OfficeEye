@@ -51,7 +51,7 @@ PUSH_TOKEN = os.environ.get("OFFICEEYE_PUSH_TOKEN", "")
 READ_ONLY = "This is the cloud view - change it on the office PC."
 # Read on the office PC, not here: a network scan, the office's photo folder.
 RELAY_GET = ("/api/scan", "/api/photos/usage", "/api/push/key", "/api/search", "/api/search/ai",
-             "/api/health")
+             "/api/health", "/api/fire")
 OFFICE_GONE = 90          # seconds without a push before the office counts as away
 # New on every start of the cloud copy. Render's free plan starts with an
 # empty disk each time, so a new BOOT tells the office to send its last
@@ -622,7 +622,7 @@ class Uplink:
         cloud = config.get("cloud")
         body = {"status": st, "cameras": cams,
                 "settings": {k: config.get(k) for k in ("office", "detection", "photos", "phone",
-                                                        "sleeping", "night", "parking")}}
+                                                        "sleeping", "night", "parking", "fire")}}
         if cloud.get("salt") and cloud.get("hash"):
             # Only a salted hash of the login password leaves this PC.
             body["login"] = {"salt": cloud["salt"], "hash": cloud["hash"],
@@ -681,7 +681,7 @@ class Uplink:
                     if now - last_refresh >= 30:
                         last_refresh = now
                         rows += events.rows_of_day(["restricted_alert", "phone_use", "washroom_in", "head_down",
-                                                    "night_activity", "parking"],
+                                                    "night_activity", "parking", "fire_smoke"],
                                                    datetime.now().strftime("%Y-%m-%d"))
                         # A vehicle parked since yesterday still gets its times.
                         rows += events.rows_of_day(["parking"], (datetime.now() - timedelta(days=1))

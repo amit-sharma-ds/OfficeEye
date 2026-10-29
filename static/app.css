@@ -563,3 +563,17 @@ table.cams tr.fresh td { background: #eef2ff; }
 .h-hist tr[data-i] { cursor: pointer; }
 .h-hist tr.open td { background: var(--red-bg); }
 .h-th { width: 56px; height: 34px; object-fit: cover; border-radius: 5px; display: block; }
+
+/* ---------------------------------------------------------- fire & smoke */
+.f-cams { display: grid; gap: 8px; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); }
+.f-cam { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 10px 12px;
+         background: var(--card); border: 1px solid var(--line); border-radius: 10px; text-align: left;
+         cursor: pointer; font: inherit; color: var(--ink); }
+.f-cam small { color: var(--mute); font-size: 12px; min-height: 1em; }
+.f-cam.fire, .f-cam.smoke { background: var(--red-bg); border-color: #fecaca; }
+.f-cam.checking { background: #fffbeb; }
+.f-no { display: inline-block; margin-top: 4px; padding: 2px 10px; border: 1px solid var(--line);
+        border-radius: 6px; font-size: 12px; color: var(--ink-2); background: var(--card); }
+.f-test { margin-top: 12px; }
+.f-test canvas { max-width: 100%; border-radius: 8px; display: block; margin-bottom: 8px; }
+.f-test ul { margin: 0; padding-left: 18px; font-size: 14px; }

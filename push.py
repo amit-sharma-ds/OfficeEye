@@ -4,7 +4,7 @@ A phone that turns on "Phone alerts" (in the app, on the cloud link or on
 this PC) hands its push address to this office PC, which keeps them in
 data/push.json together with its own key pair (VAPID). A thread watches the
 records: a new restricted-area alert, something at night (Night vision), a
-new vehicle in the parking or a camera with a problem (Camera health) is
+new vehicle in the parking, fire or smoke, or a camera with a problem (Camera health) is
 sent to every phone at once - the app does not have to be open.
 
 The office PC sends them itself (it has the records and the key), so the
@@ -168,6 +168,11 @@ class Push:
             return {"title": "New vehicle{} - {}".format(" after hours" if late else "", cam),
                     "body": "{} came at {}".format(what, at), "url": "/parking", "image": image,
                     "tag": "parking-{}".format(row["id"]), "urgent": late}
+        if row["kind"] == "fire_smoke":
+            fire = meta.get("type", row.get("label")) == "fire"
+            return {"title": "{} - {}".format("FIRE" if fire else "SMOKE", cam), "urgent": True,
+                    "body": "{} seen at {}. Check at once.".format("Fire" if fire else "Smoke", at),
+                    "url": "/fire", "image": image, "tag": "fire-{}".format(row["id"])}
         if row["kind"] == "camera_health":
             return {"title": "{} - {}".format(cam, meta.get("title") or row.get("label")),
                     "body": "{} Since {}.".format(meta.get("text") or "", str(meta.get("started") or "")[11:16]),

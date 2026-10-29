@@ -34,6 +34,8 @@
       <a href="/sleeping"   class="{{ 'on' if page == 'sleeping' }}">Sleeping / Head down</a>
       <a href="/night"      class="{{ 'on' if page == 'night' }}">Night vision</a>
       <a href="/parking"    class="{{ 'on' if page == 'parking' }}">Parking</a>
+      <a href="/fire"       class="{{ 'on' if page == 'fire' }}">Fire &amp; smoke
+        <span class="badge" id="fire-badge" hidden></span></a>
       <a href="/health"     class="{{ 'on' if page == 'health' }}">Camera health
         <span class="badge" id="health-badge" hidden></span></a>
       <a href="/cameras"    class="{{ 'on' if page == 'cameras' }}">Cameras</a>
@@ -411,8 +413,17 @@
       const from = seenNotice;
       seenNotice = latest;
       const {notices} = await api('/api/notices?after=' + from);
+      let loud = false;
       notices.forEach(n => {
         const name = names[n.camera] || n.camera, m = n.meta || {};
+        if (n.kind === 'fire_smoke') {
+          const flames = (m.type || n.label) === 'fire';
+          loud = true;
+          toast({kind: 'alert', title: `${flames ? 'FIRE' : 'SMOKE'} - ${name}`,
+                 body: `${flames ? 'Fire' : 'Smoke'} seen at ${clock(m.started || n.ts).slice(0, 5)}. Check at once.`,
+                 img: eventThumb(n), onclick: () => { location.href = '/fire'; }});
+          return;
+        }
         const car = n.kind === 'parking';
         toast({
           kind: car ? '' : 'alert',
@@ -423,7 +434,7 @@
           onclick: () => { location.href = car ? '/parking' : '/health'; },
         });
       });
-      if (notices.length) beep(1);
+      if (notices.length) beep(loud ? 6 : 1);
     }
 
     // Cloud view: how fresh is what the office PC sent?
@@ -477,6 +488,8 @@
       $('#wash-badge').textContent = inUse ? 'door' : '';
       $('#health-badge').hidden = !s.health_problems;
       $('#health-badge').textContent = s.health_problems || '';
+      $('#fire-badge').hidden = !s.fire_now;
+      $('#fire-badge').textContent = s.fire_now || '';
       document.title = n ? `(${n}) ALERT - ${pageTitle}` : pageTitle;
 
       const d = s.detection;

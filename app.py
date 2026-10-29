@@ -29,6 +29,7 @@ import parking                      # noqa: F401 - cars and bikes in the parking
 import search                       # the search box: people, phones, vehicles, any object
 import push                         # phone alerts for the installed app (PWA)
 import health                       # camera health: offline, covered, moved, blurry
+import fire                         # fire and smoke on every camera
 from cameras import manager
 from detection import phone_watch_state, pipeline
 
@@ -136,6 +137,11 @@ def health_page():
     return _page("health.html", "health", cameras=manager.listing(), states=health.STATES)
 
 
+@app.get("/fire")
+def fire_page():
+    return _page("fire.html", "fire", cameras=manager.listing())
+
+
 @app.get("/search")
 def search_page():
     """The search lives on the Live cameras page."""
@@ -213,6 +219,7 @@ def _status_payload():
         "latest_alert": events.latest_id("restricted_alert"),
         "latest_notice": events.latest_of(NOTICE_KINDS),
         "health_problems": health.monitor.problems(),
+        "fire_now": fire.watch.open_count(),
         "alerts_today": events.count_today("restricted_alert"),
         "phone_today": events.count_today("phone_use", with_photos=True),
         "server_time": datetime.now().isoformat(timespec="seconds"),
@@ -259,8 +266,8 @@ def api_alert_delete(event_id):
 # Select on the Phone use, Head down, Night vision and Washroom pages).
 DELETABLE = ("restricted_alert", "phone_use", "head_down", "night_activity",
              "washroom_visit", "washroom_in", "washroom_out", "washroom_door", "parking",
-             "camera_health")
-NOTICE_KINDS = ("parking", health.KIND)      # shown as a note on every page
+             "camera_health", fire.KIND)
+NOTICE_KINDS = ("parking", health.KIND, fire.KIND)      # shown as a note on every page
 
 
 @app.get("/api/notices")
@@ -291,6 +298,66 @@ def health_normal(cam_id):
     if not path:
         abort(404)
     return send_file(path, mimetype="image/jpeg", max_age=0)
+
+
+def _fire_out():
+    rules = cloud.section("fire")
+    return dict(fire.watch.report(rules), rules=rules)
+
+
+@app.get("/api/fire")
+def api_fire():
+    """Fire and smoke on every camera now, and the records of the last 30 days."""
+    since = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+    return jsonify(dict(_fire_out(), records=events.between([fire.KIND], since, "9999", limit=300)))
+
+
+@app.post("/api/fire/rules")
+def api_fire_rules_save():
+    body = request.get_json(silent=True) or {}
+    patch = {}
+    for key in ("enabled", "smoke"):
+        if key in body:
+            patch[key] = bool(body[key])
+    if body.get("sensitivity") in fire.SURE:
+        patch["sensitivity"] = body["sensitivity"]
+    if "cameras_off" in body:
+        known = {c["id"] for c in config.cameras()}
+        patch["cameras_off"] = [str(c) for c in body["cameras_off"] or [] if str(c) in known][:200]
+    config.update("fire", patch)
+    return jsonify(dict(_fire_out(), ok=True, message="Fire and smoke rules saved"))
+
+
+@app.post("/api/fire/<int:event_id>/not-fire")
+def api_fire_not_fire(event_id):
+    ok = fire.watch.not_fire(event_id)
+    return jsonify({"ok": ok, "message": "Thanks - this spot will not alert again" if ok
+                    else "Record not found"})
+
+
+@app.post("/api/fire/spots/forget")
+def api_fire_spots_forget():
+    camera = str((request.get_json(silent=True) or {}).get("camera") or "") or None
+    n = fire.watch.forget_spots(camera)
+    return jsonify({"ok": True, "message": "Forgot {} learnt spot{}".format(n, "" if n == 1 else "s")})
+
+
+@app.post("/api/fire/test")
+def api_fire_test():
+    """A photo sent from the page: what would the fire check say about it?"""
+    data = str((request.get_json(silent=True) or {}).get("image") or "")
+    try:
+        import base64
+        raw = base64.b64decode(data.split(",", 1)[-1][:16_000_000])
+        frame = cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_COLOR)
+    except (ValueError, TypeError):
+        frame = None
+    if frame is None:
+        return jsonify({"ok": False, "message": "That is not a picture"})
+    found = fire.watch.test(frame)
+    if found is None:
+        return jsonify({"ok": False, "message": "The fire model is not running"})
+    return jsonify({"ok": True, "found": found})
 
 
 @app.post("/api/records/delete")
@@ -1208,6 +1275,7 @@ def main():
     mongo.sync.start(manager.listing)
     push.sender.start()                 # phone alerts for new alerts and night records
     health.monitor.start(manager)       # every camera's picture, twice a minute
+    fire.watch.start(manager, pipeline)  # fire and smoke, every camera about once a minute
     log.info("open  http://localhost:%s", PORT)
     try:
         app.run(host="0.0.0.0", port=PORT, threaded=True,

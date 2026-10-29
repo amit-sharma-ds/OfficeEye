@@ -77,6 +77,13 @@ DEFAULTS = {
         "cameras": [],            # camera ids that look at the parking
         "arrive_seconds": 20,     # standing at one spot this long = a new vehicle (alert), not passing by
     },
+    # Fire and smoke (Fire & smoke page, fire.py): every camera, day and night.
+    "fire": {
+        "enabled": True,
+        "smoke": True,            # alert for smoke too, not only flames
+        "sensitivity": "medium",  # low / medium / high: how sure the model has to be
+        "cameras_off": [],        # camera ids left out (a kitchen stove in view, say)
+    },
     # A copy of every record in MongoDB (mongo.py). The connection string is
     # MONGO_URI in the .env file - never here, never in the repository.
     "mongodb": {

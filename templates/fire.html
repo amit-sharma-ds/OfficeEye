@@ -1,0 +1,294 @@
+{% extends "base.html" %}
+{% block title %}Fire &amp; smoke{% endblock %}
+
+{% block body %}
+<h1>Fire &amp; smoke</h1>
+<p class="sub">Every camera is looked at about once a minute, day and night, by a model trained only
+   for fire and smoke. To keep false alarms away it alerts only when the fire or smoke is seen
+   <b>3 times at the same spot</b> and it <b>flickers or drifts</b> - an orange lamp, a red shirt or
+   sunlight on a wall stays the same and never alerts. Then you get a photo, a loud note on every
+   page and a phone alert.</p>
+
+<div class="tabs" role="tablist">
+  <button class="on" data-tab="use" role="tab">Fire &amp; smoke</button>
+  <button data-tab="rules" role="tab">Rules &amp; cameras</button>
+  <button data-tab="test" role="tab">Test with a photo</button>
+</div>
+
+<section data-pane="use">
+<div class="h-banner" id="f-banner"><b>Starting the fire watch&hellip;</b><span></span></div>
+
+<div class="stats four">
+  <div class="stat">
+    <div class="stat-k">Cameras watched</div>
+    <div class="stat-n" id="f-cams">-</div>
+    <div class="stat-sub" id="f-cams-sub">&nbsp;</div>
+  </div>
+  <div class="stat">
+    <div class="stat-k">Each camera checked</div>
+    <div class="stat-n" id="f-every">-</div>
+    <div class="stat-sub" id="f-checks">&nbsp;</div>
+  </div>
+  <div class="stat">
+    <div class="stat-k">False alarms stopped today</div>
+    <div class="stat-n ok" id="f-stopped">-</div>
+    <div class="stat-sub" id="f-stopped-sub">&nbsp;</div>
+  </div>
+  <div class="stat">
+    <div class="stat-k">Fire or smoke, 30 days</div>
+    <div class="stat-n" id="f-count">-</div>
+    <div class="stat-sub" id="f-count-sub">&nbsp;</div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head"><h2>Every camera now</h2><span class="hint-inline">click one to see its picture</span></div>
+  <div class="f-cams" id="f-states"></div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <h2>Fire and smoke records</h2>
+    <span class="hint-inline" id="f-span"></span>
+    <select id="cam" class="date">
+      <option value="">All cameras</option>
+      {% for cam in cameras %}<option value="{{ cam.id }}">{{ cam.name }}</option>{% endfor %}
+    </select>
+  </div>
+  <div class="incidents" id="gallery"><p class="empty">Loading&hellip;</p></div>
+</div>
+</section>
+
+<section data-pane="rules" hidden>
+  <div class="card">
+    <div class="card-head"><h2>Fire and smoke rules</h2></div>
+    <div class="rule">
+      <label><input type="checkbox" id="r-on"> Fire and smoke watch on</label>
+      <p class="hint">Runs all day and all night. It uses about a third of the detection's time,
+         so people counting gets a little slower.</p>
+    </div>
+    <div class="rule">
+      <label><input type="checkbox" id="r-smoke"> Alert for smoke too</label>
+      <p class="hint">Off: only flames alert. Smoke shows a fire earlier, but steam, dust and fog can look like it.</p>
+    </div>
+    <div class="rule">
+      <label for="r-sens">How sure the model has to be</label>
+      <div><select id="r-sens">
+        <option value="low">Low sensitivity - only a clear fire, fewest false alarms</option>
+        <option value="medium">Medium (recommended)</option>
+        <option value="high">High - small or faint fire too, more false alarms</option>
+      </select></div>
+      <p class="hint">Whatever this is, the fire still has to be seen 3 times at one spot and has to flicker.</p>
+    </div>
+    <div class="rule">
+      <label>Cameras watched for fire and smoke</label>
+      <div class="cam-checks" id="r-cams">
+        {% for cam in cameras %}<label><input type="checkbox" value="{{ cam.id }}" checked> {{ cam.name }}</label>{% endfor %}
+      </div>
+      <p class="hint">Untick a camera to leave it out - one that sees a kitchen stove or a candle, say.
+         To leave out only part of a picture (a TV, a window with sunset) mark it with
+         <b>Ignore areas</b> on the camera's live view.</p>
+    </div>
+    <div class="rule">
+      <label>Spots learnt as "not fire"</label>
+      <div><span id="r-spots">-</span> <button class="ghost sm" id="r-forget">Forget them all</button></div>
+      <p class="hint">A spot is learnt when the model kept calling something there fire but it never
+         flickered, or when you press <b>Not fire</b> on a record. It alerts there again only if the
+         model is very sure.</p>
+    </div>
+    <div class="row end">
+      <span class="status" id="r-status"></span>
+      <button class="primary" id="r-save">Save rules</button>
+    </div>
+  </div>
+</section>
+
+<section data-pane="test" hidden>
+  <div class="card">
+    <div class="card-head"><h2>Test the model with a photo</h2></div>
+    <p class="hint">Pick a photo or a video still of a fire (or of something you think could be
+       mistaken for one). It shows what the model finds and what the checks say. On a camera,
+       the 3-times and flicker checks come on top - a photo cannot show those.
+       To test a camera itself, play a fire video on a phone in front of it for half a minute.</p>
+    <div class="row"><input type="file" id="t-file" accept="image/*"> <span class="status" id="t-status"></span></div>
+    <div class="f-test" id="t-out" hidden>
+      <canvas id="t-canvas"></canvas>
+      <ul id="t-list"></ul>
+    </div>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function showTab(name) {
+  $$('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === name));
+  $$('[data-pane]').forEach(p => p.hidden = p.dataset.pane !== name);
+  try { localStorage.setItem('pc-fire-tab', name); } catch (e) {}
+}
+$$('.tabs button').forEach(b => b.onclick = () => showTab(b.dataset.tab));
+try { const t = localStorage.getItem('pc-fire-tab'); if (t === 'rules' || t === 'test') showTab(t); } catch (e) {}
+
+const camName = (id) => names[id] || id;
+const STATE = {clear: ['Clear', 's-ok'], checking: ['Checking something', 's-stuck'],
+               fire: ['FIRE', 's-offline'], smoke: ['SMOKE', 's-offline'],
+               off: ['Not watched', 's-off'], waiting: ['Not checked yet', 's-learning']};
+const REASON = {'wrong colour': 'not fire-coloured', 'never changed': 'never flickered (a lamp, a poster)',
+                'learnt not fire': 'a spot learnt as not fire', 'on a person': 'on a person (clothes)',
+                'too small': 'too small', 'ignore area': 'in an ignore area', 'smoke is switched off': 'smoke switched off'};
+const dur = (s) => s == null ? '' : s < 60 ? `${s} s` : s < 3600 ? `${Math.floor(s / 60)} min ${String(s % 60).padStart(2, '0')} s`
+  : `${Math.floor(s / 3600)} h ${String(Math.floor(s % 3600 / 60)).padStart(2, '0')} min`;
+let data = null, shown = [], camsTouched = false;
+
+// ------------------------------------------------------------ now
+function paint() {
+  const cams = data.cameras, ids = Object.keys(cams);
+  const watched = ids.filter(id => cams[id].state !== 'off');
+  const burning = ids.filter(id => ['fire', 'smoke'].includes(cams[id].state));
+  const banner = $('#f-banner');
+  banner.className = 'h-banner ' + (burning.length ? 'bad' : data.state === 'running' ? 'good' : '');
+  $('b', banner).textContent = burning.length
+    ? burning.map(id => `${cams[id].state === 'fire' ? 'FIRE' : 'SMOKE'} at ${camName(id)}`).join(' · ') + ' - check at once'
+    : data.state === 'error' ? 'The fire model could not start'
+    : data.state === 'off' ? 'Fire and smoke watch is switched off'
+    : `No fire or smoke - ${plural(watched.length, 'camera')} watched`;
+  $('span', banner).textContent = burning.length ? 'Click the record below to see the photos.'
+    : data.state === 'error' ? data.error
+    : data.state === 'off' ? 'Switch it on under Rules & cameras.'
+    : 'Day and night. A real fire flickers and is seen 3 times before an alert.';
+
+  $('#f-cams').textContent = watched.length;
+  $('#f-cams-sub').textContent = ids.length - watched.length ? `${ids.length - watched.length} switched off` : 'all cameras';
+  $('#f-every').textContent = data.every ? (data.every < 90 ? `${data.every} s` : `${Math.round(data.every / 60)} min`) : '-';
+  $('#f-checks').textContent = `${data.checks_today} checks today`;
+  const stopped = data.stopped_today, total = Object.values(stopped).reduce((a, b) => a + b, 0);
+  $('#f-stopped').textContent = total;
+  $('#f-stopped-sub').textContent = total ? Object.entries(stopped).sort((a, b) => b[1] - a[1]).slice(0, 2)
+    .map(([k, n]) => `${n} ${REASON[k] || k}`).join(', ') : 'nothing looked like fire';
+
+  const order = ['fire', 'smoke', 'checking', 'clear', 'waiting', 'off'];
+  $('#f-states').innerHTML = ids.sort((a, b) => order.indexOf(cams[a].state) - order.indexOf(cams[b].state)
+                                               || camName(a).localeCompare(camName(b), [], {numeric: true}))
+    .map(id => {
+      const c = cams[id], [title, cls] = STATE[c.state] || [c.state, 's-off'];
+      return `<button class="f-cam ${esc(c.state)}" data-cam="${esc(id)}"><b>${esc(camName(id))}</b>` +
+        `<span class="h-chip ${cls}">${esc(title)}</span>` +
+        `<small>${c.checked_ago != null && c.state !== 'off' ? `checked ${dur(c.checked_ago)} ago` : ''}</small></button>`;
+    }).join('');
+  $$('#f-states .f-cam').forEach(b => b.onclick = () => openPhotos([{
+    src: `/frame/${encodeURIComponent(b.dataset.cam)}.jpg?w=1280&overlay=0&caption=0&t=${Date.now()}`,
+    caption: `${camName(b.dataset.cam)} - now`}], 0));
+  paintRules();
+  paintRecords();
+}
+
+// ------------------------------------------------------------ records
+const deleter = new DeleteList('#gallery', {reload: () => load().catch(() => {}), noun: 'record'});
+const cam = $('#cam');
+cam.onchange = () => paintRecords();
+
+function paintRecords() {
+  const all = data.records;
+  shown = all.filter(e => !cam.value || e.camera === cam.value);
+  const real = all.filter(e => !e.meta.not_fire);
+  $('#f-count').textContent = real.length;
+  $('#f-count').classList.toggle('warn', real.length > 0);
+  $('#f-count-sub').textContent = real.length ? `latest ${real[0].ts.slice(0, 10)} ${clock(real[0].ts).slice(0, 5)}` : 'none';
+  $('#f-span').textContent = plural(shown.length, 'record');
+  $('#gallery').innerHTML = shown.length ? shown.map((e, i) => {
+    const m = e.meta || {}, th = eventThumb(e), flames = (m.type || e.label) === 'fire';
+    const live = !m.ended && !m.not_fire && Date.now() - new Date(m.last_seen || e.ts).getTime() < 120000;
+    return delWrap(e.id, `<button class="incident ${m.not_fire ? 'blue' : ''} ${live ? 'live' : ''}" data-i="${i}">` +
+      (th ? `<img src="${esc(th)}" alt="">` : '<span class="noimg">no photo</span>') +
+      `<div class="inc-body"><b>${esc(camName(e.camera))} · ${flames ? 'Fire' : 'Smoke'}${m.not_fire ? ' (marked not fire)' : ''}</b>` +
+      `<span class="when">${esc(e.ts.slice(0, 10))} ${esc(clock(m.started || e.ts))}` +
+      `${m.ended ? ' - ' + esc(clock(m.ended)) : live ? ' - now' : ''}</span>` +
+      `<span>model ${Math.round((m.score || 0) * 100)}% sure${m.seconds ? ' · ' + dur(m.seconds) : ''}` +
+      ` · ${plural((m.photos || []).length, 'photo')}</span>` +
+      (m.not_fire ? '' : `<span><span class="ghost sm f-no" role="button" tabindex="0" data-id="${e.id}">Not fire</span></span>`) +
+      `</div></button>`);
+  }).join('') : '<p class="empty">No fire or smoke in the last 30 days.</p>';
+  deleter.refresh(shown.map(e => e.id));
+  $$('#gallery .incident').forEach(b => b.onclick = (ev) => {
+    const no = ev.target.closest('.f-no');
+    if (no) { ev.stopPropagation(); notFire(+no.dataset.id); return; }
+    const e = shown[+b.dataset.i];
+    const list = (e.meta.photos || []).map(p => ({src: '/photos/' + p.full, caption: `${camName(e.camera)} - ${clock(p.ts || e.ts)}`}));
+    if (list.length) openPhotos(list, 0);
+  });
+}
+
+async function notFire(id) {
+  const r = await post(`/api/fire/${id}/not-fire`);
+  toast({title: 'Not fire', body: r.message, kind: 'info'});
+  load().catch(() => {});
+}
+
+// ------------------------------------------------------------ rules
+function paintRules() {
+  const x = data.rules;
+  $('#r-on').checked = x.enabled !== false;
+  $('#r-smoke').checked = x.smoke !== false;
+  $('#r-sens').value = x.sensitivity || 'medium';
+  $('#r-spots').textContent = plural(data.spots, 'spot');
+  if (!camsTouched) {
+    const off = new Set(x.cameras_off || []);
+    $$('#r-cams input').forEach(i => i.checked = !off.has(i.value));
+  }
+}
+$('#r-cams').onchange = () => { camsTouched = true; };
+$('#r-save').onclick = async () => {
+  const r = await post('/api/fire/rules', {
+    enabled: $('#r-on').checked, smoke: $('#r-smoke').checked, sensitivity: $('#r-sens').value,
+    cameras_off: $$('#r-cams input').filter(i => !i.checked).map(i => i.value),
+  });
+  $('#r-status').textContent = r.message;
+  if (r.ok) { camsTouched = false; load().catch(() => {}); }
+};
+$('#r-forget').onclick = async () => {
+  if (!confirm('Forget every spot learnt as "not fire"? Things there may alert again.')) return;
+  const r = await post('/api/fire/spots/forget', {});
+  $('#r-status').textContent = r.message;
+  load().catch(() => {});
+};
+
+// ------------------------------------------------------------ test with a photo
+$('#t-file').onchange = async () => {
+  const f = $('#t-file').files[0];
+  if (!f) return;
+  $('#t-status').textContent = 'Looking at it…';
+  const img = new Image();
+  img.src = URL.createObjectURL(f);
+  await img.decode();
+  const k = Math.min(1, 1280 / Math.max(img.width, img.height));
+  const cv = $('#t-canvas'), g = cv.getContext('2d');
+  cv.width = Math.round(img.width * k); cv.height = Math.round(img.height * k);
+  g.drawImage(img, 0, 0, cv.width, cv.height);
+  const r = await post('/api/fire/test', {image: cv.toDataURL('image/jpeg', 0.9)});
+  if (!r.ok) { $('#t-status').textContent = r.message; return; }
+  const found = r.found.sort((a, b) => b.pass - a.pass || b.score - a.score);
+  g.lineWidth = Math.max(2, cv.width / 300);
+  g.font = `bold ${Math.max(12, cv.width / 50)}px sans-serif`;
+  found.forEach(f => {
+    const [x1, y1, x2, y2] = [f.box[0] * cv.width, f.box[1] * cv.height, f.box[2] * cv.width, f.box[3] * cv.height];
+    g.strokeStyle = g.fillStyle = f.pass ? '#dc2626' : '#9ca3af';
+    g.strokeRect(x1, y1, x2 - x1, y2 - y1);
+    g.fillText(`${f.kind} ${Math.round(f.score * 100)}%`, x1 + 4, Math.max(14, y1 - 4));
+  });
+  const pass = found.filter(f => f.pass);
+  $('#t-status').textContent = pass.length ? `Would alert (after 3 checks with flicker): ${pass.map(f => f.kind).join(', ')}`
+    : found.length ? 'Would not alert' : 'The model finds no fire or smoke here';
+  $('#t-list').innerHTML = found.map(f => `<li><b>${esc(f.kind)}</b> ${Math.round(f.score * 100)}% - ` +
+    (f.pass ? 'passes the checks' : 'stopped: ' + esc(REASON[f.why] || f.why)) + '</li>').join('');
+  $('#t-out').hidden = false;
+};
+
+// ------------------------------------------------------------ loading
+async function load() {
+  data = await api('/api/fire');
+  paint();
+}
+load().catch(() => {});
+setInterval(() => { if ($$('.modal').every(m => m.hidden)) load().catch(() => {}); }, 10000);
+</script>
+{% endblock %}
