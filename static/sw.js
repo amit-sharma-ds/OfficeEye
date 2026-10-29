@@ -24,6 +24,7 @@ self.addEventListener('push', (e) => {
     body: d.body || '',
     icon: '/static/icon-192.png',
     badge: '/static/icon-192.png',
+    image: d.image || undefined,
     tag: d.tag || undefined,
     renotify: !!d.tag,
     requireInteraction: !!d.urgent,

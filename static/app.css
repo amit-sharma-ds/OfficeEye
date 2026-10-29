@@ -43,6 +43,11 @@ code { background: #f3f4f6; padding: 1px 5px; border-radius: 4px; font-size: 12.
 }
 .sidebar nav a:hover { background: #1f2937; color: #fff; }
 .sidebar nav a.on { background: var(--brand); color: #fff; }
+.side-search { margin: -6px 0 -4px; }
+.side-search input { width: 100%; background: #1f2937; border: 1px solid #374151; color: #f9fafb;
+                     border-radius: 8px; padding: 8px 10px; font-size: 13.5px; }
+.side-search input::placeholder { color: #6b7280; }
+.side-search input:focus { outline: 2px solid var(--brand); border-color: transparent; }
 .sidebar .foot { margin-top: auto; font-size: 12px; color: #6b7280;
                  padding: 0 8px; display: flex; flex-direction: column; gap: 6px; }
 .sidebar .engine { color: #9ca3af; }
@@ -493,6 +498,16 @@ table.cams tr.fresh td { background: #eef2ff; }
 .perf span { font-size: 12px; color: var(--mute); }
 .perf b { font-size: 16px; }
 
+/* ---------------------------------------------------------- search */
+.search-box { display: flex; gap: 8px; margin: 4px 0 12px; }
+.search-box input { flex: 1; min-width: 0; font-size: 16px; padding: 10px 12px; }
+.search-sum { font-size: 18px; margin: 18px 0 2px; }
+.search-sum b { color: var(--brand); }
+.search-meta { display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+               color: var(--mute); font-size: 13px; margin-bottom: 4px; }
+.tile.found { outline-color: #f59e0b; }
+.tile.found .shot img { object-fit: contain; }
+
 /* ---------------------------------------------------------- small screens */
 @media (max-width: 760px) {
   body { flex-direction: column; }
@@ -510,3 +525,41 @@ table.cams tr.fresh td { background: #eef2ff; }
   .wall-head input[type=search] { margin-left: 0; width: 100%; }
   .stat-n { font-size: 26px; }
 }
+
+/* ---------------------------------------------------------- camera health */
+.stat-n.ok { color: var(--green); }
+.h-banner { display: flex; flex-direction: column; gap: 4px; padding: 16px 20px; margin-bottom: 16px;
+            border-radius: 12px; background: var(--card); border: 1px solid var(--line); }
+.h-banner b { font-size: 20px; }
+.h-banner span { color: var(--ink-2); }
+.h-banner.good { background: #f0fdf4; border-color: #bbf7d0; }
+.h-banner.good b { color: var(--green); }
+.h-banner.bad { background: var(--red-bg); border-color: #fecaca; }
+.h-banner.bad b { color: var(--red); }
+.h-grid { display: grid; gap: 12px; margin-bottom: 16px;
+          grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
+.h-card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; overflow: hidden;
+          border-top: 4px solid var(--green); }
+.h-card.s-offline, .h-card.s-covered, .h-card.s-moved { border-top-color: var(--red); background: var(--red-bg); }
+.h-card.s-blurry, .h-card.s-stuck { border-top-color: var(--amber); background: #fffbeb; }
+.h-card.s-dark, .h-card.s-learning, .h-card.s-off { border-top-color: var(--faint); }
+.h-pic { position: relative; aspect-ratio: 16 / 9; background: #111827; cursor: pointer; }
+.h-pic img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.h-card.s-offline .h-pic img { opacity: .35; }
+.h-pic .h-chip { position: absolute; left: 8px; top: 8px; }
+.h-body { display: flex; flex-direction: column; gap: 3px; padding: 10px 12px; font-size: 13px; }
+.h-body b { font-size: 14px; }
+.h-text { color: var(--ink-2); }
+.h-since { color: var(--mute); font-size: 12px; }
+.h-since button { margin-top: 6px; }
+.h-chip { display: inline-block; padding: 3px 9px; border-radius: 999px; font-size: 12px; font-weight: 600;
+          color: #fff; background: var(--green); white-space: nowrap; }
+.h-chip.s-offline, .h-chip.s-covered, .h-chip.s-moved { background: var(--red); }
+.h-chip.s-blurry, .h-chip.s-stuck { background: var(--amber); }
+.h-chip.s-dark, .h-chip.s-learning, .h-chip.s-off { background: #6b7280; }
+.h-legend { display: grid; gap: 8px; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+            font-size: 13px; color: var(--ink-2); }
+.h-legend .h-chip { margin-right: 6px; }
+.h-hist tr[data-i] { cursor: pointer; }
+.h-hist tr.open td { background: var(--red-bg); }
+.h-th { width: 56px; height: 34px; object-fit: cover; border-radius: 5px; display: block; }

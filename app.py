@@ -8,11 +8,12 @@ import re
 import threading
 import time
 from datetime import datetime, timedelta
+from urllib.parse import quote
 
 import cv2
 import numpy as np
 from flask import (Flask, Response, abort, jsonify, redirect, render_template,
-                   request, send_from_directory)
+                   request, send_file, send_from_directory)
 from werkzeug.security import safe_join
 
 import cloud
@@ -25,7 +26,9 @@ import washroom                     # noqa: F401 - adds its detection to the pip
 import sleeping                     # head down / sleeping, added the same way
 import night                        # night watch after office hours, the same way
 import parking                      # noqa: F401 - cars and bikes in the parking, the same way
+import search                       # the search box: people, phones, vehicles, any object
 import push                         # phone alerts for the installed app (PWA)
+import health                       # camera health: offline, covered, moved, blurry
 from cameras import manager
 from detection import phone_watch_state, pipeline
 
@@ -82,7 +85,8 @@ def dashboard():
 
 @app.get("/live")
 def live_page():
-    return _page("live.html", "live", cameras=manager.listing())
+    return _page("live.html", "live", cameras=manager.listing(),
+                 query=request.args.get("q", "")[:100])
 
 
 @app.get("/running-time")
@@ -125,6 +129,18 @@ def night_page():
 @app.get("/parking")
 def parking_page():
     return _page("parking.html", "parking", cameras=manager.listing(config.COUNT))
+
+
+@app.get("/health")
+def health_page():
+    return _page("health.html", "health", cameras=manager.listing(), states=health.STATES)
+
+
+@app.get("/search")
+def search_page():
+    """The search lives on the Live cameras page."""
+    q = request.args.get("q", "")[:100]
+    return redirect("/live?q=" + quote(q) if q else "/live")
 
 
 @app.get("/cameras")
@@ -195,6 +211,8 @@ def _status_payload():
         "peak_today": max(peaks.values()) if peaks else None,
         "alerting": alerting,
         "latest_alert": events.latest_id("restricted_alert"),
+        "latest_notice": events.latest_of(NOTICE_KINDS),
+        "health_problems": health.monitor.problems(),
         "alerts_today": events.count_today("restricted_alert"),
         "phone_today": events.count_today("phone_use", with_photos=True),
         "server_time": datetime.now().isoformat(timespec="seconds"),
@@ -240,7 +258,39 @@ def api_alert_delete(event_id):
 # Records that can be deleted by hand, photos and all (the trash icon and
 # Select on the Phone use, Head down, Night vision and Washroom pages).
 DELETABLE = ("restricted_alert", "phone_use", "head_down", "night_activity",
-             "washroom_visit", "washroom_in", "washroom_out", "washroom_door", "parking")
+             "washroom_visit", "washroom_in", "washroom_out", "washroom_door", "parking",
+             "camera_health")
+NOTICE_KINDS = ("parking", health.KIND)      # shown as a note on every page
+
+
+@app.get("/api/notices")
+def api_notices():
+    """New vehicles and camera problems after id `after`, for the note on every page."""
+    rows = events.after_of(NOTICE_KINDS, int(request.args.get("after", 0) or 0))
+    return jsonify({"notices": [r for r in rows if not (r["kind"] == "parking" and r["meta"].get("was_there"))]})
+
+
+@app.get("/api/health")
+def api_health():
+    """Each camera's health now, and the problems of the last 7 days."""
+    since = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+    return jsonify(dict(health.monitor.report(),
+                        history=events.between([health.KIND], since, "9999", limit=500)))
+
+
+@app.post("/api/health/<cam_id>/normal")
+def api_health_normal(cam_id):
+    ok = health.monitor.accept_view(cam_id)
+    return jsonify({"ok": ok, "message": "Saved: this is its normal view now" if ok
+                    else "No picture from this camera right now"})
+
+
+@app.get("/health/normal/<cam_id>.jpg")
+def health_normal(cam_id):
+    path = health.monitor.normal_view(cam_id)
+    if not path:
+        abort(404)
+    return send_file(path, mimetype="image/jpeg", max_age=0)
 
 
 @app.post("/api/records/delete")
@@ -586,6 +636,40 @@ def api_night():
     return jsonify({"night": label, "from": frm, "to": to, "events": rows, **_night_rules_out()})
 
 
+@app.get("/api/search")
+def api_search():
+    """Search the cameras' latest checks (search.py). On the cloud view the
+    office PC answers (cloud.RELAY_GET)."""
+    latest, look_all_at = pipeline.latest()
+    return jsonify(search.answer(request.args.get("q", "")[:100], latest, look_all_at,
+                                 config.cameras(), pipeline.class_names(),
+                                 pipeline.detector("phone")))
+
+
+@app.post("/api/search/check")
+def api_search_check():
+    """Search -> Check now: every camera is looked at again within a minute or so."""
+    pipeline.look_all()
+    return jsonify({"ok": True, "message": "Looking at every camera again"})
+
+
+@app.post("/api/search/ai")
+def api_search_ai_start():
+    """The AI search (YOLOE) for words the model does not always look for."""
+    body = request.get_json(silent=True) or {}
+    words = search.ai_words(str(body.get("q") or ""))
+    if not words:
+        return jsonify({"ok": False, "message": "Type what to look for"})
+    latest, _ = pipeline.latest()
+    return jsonify(search.ai.start(str(body.get("q"))[:100], words, latest, config.cameras(), pipeline))
+
+
+@app.get("/api/search/ai")
+def api_search_ai():
+    have = [c for c in (request.args.get("have") or "").split(",") if c]
+    return jsonify(search.ai.public(have))
+
+
 def _parking_rules_out():
     rules, office = cloud.section("parking"), cloud.section("office")
     return {"rules": rules, "office": {"open": office.get("open"), "close": office.get("close")}}
@@ -601,10 +685,10 @@ def api_parking_rules_save():
     body = request.get_json(silent=True) or {}
     patch = {}
     try:
-        if "park_minutes" in body:
-            patch["park_minutes"] = min(max(float(body["park_minutes"]), 1), 60)
+        if "arrive_seconds" in body:
+            patch["arrive_seconds"] = min(max(float(body["arrive_seconds"]), 10), 600)
     except (TypeError, ValueError):
-        return jsonify({"ok": False, "message": "Minutes must be a number"})
+        return jsonify({"ok": False, "message": "Seconds must be a number"})
     if "enabled" in body:
         patch["enabled"] = bool(body["enabled"])
     if "cameras" in body:
@@ -1077,10 +1161,39 @@ def _already_running(port):
         return sock.connect_ex(("127.0.0.1", port)) == 0
 
 
+_LOCK = None
+
+
+def _only_copy():
+    """One app per data folder. A second copy on another port (a preview, a
+    second window) would check every camera twice - on this PC each one then
+    waits far longer - and write every record twice."""
+    global _LOCK
+    os.makedirs(config.DATA_DIR, exist_ok=True)
+    f = open(os.path.join(config.DATA_DIR, "app.lock"), "a+")
+    try:
+        f.seek(0)
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        f.close()
+        return False
+    _LOCK = f
+    return True
+
+
 def main():
     if _already_running(PORT):
         log.error("port %s is already in use - the app is probably open in "
                   "another window. Close it first.", PORT)
+        return
+    if not cloud.CLOUD and not _only_copy():
+        log.error("OfficeEye is already running from this folder (on another port) - "
+                  "close that copy first.")
         return
     os.makedirs(photos.PHOTO_DIR, exist_ok=True)
     threading.Thread(target=_housekeeping, name="housekeeping", daemon=True).start()
@@ -1094,6 +1207,7 @@ def main():
     cloud.uplink.start(_status_payload, _render, manager.listing)
     mongo.sync.start(manager.listing)
     push.sender.start()                 # phone alerts for new alerts and night records
+    health.monitor.start(manager)       # every camera's picture, twice a minute
     log.info("open  http://localhost:%s", PORT)
     try:
         app.run(host="0.0.0.0", port=PORT, threaded=True,

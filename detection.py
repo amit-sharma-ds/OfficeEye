@@ -63,12 +63,13 @@ def register(cls):
 
 class Seen:
     """What the model found in one frame."""
-    __slots__ = ("people", "phones", "vehicles")
+    __slots__ = ("people", "phones", "vehicles", "objects")
 
-    def __init__(self, people=None, phones=None, vehicles=None):
+    def __init__(self, people=None, phones=None, vehicles=None, objects=None):
         self.people = people or []      # [(x1, y1, x2, y2, score), ...]
         self.phones = phones or []
         self.vehicles = vehicles or []  # [(x1, y1, x2, y2, score, "car"), ...] - parking.py
+        self.objects = objects or []    # everything else the model knows, same shape - search.py
 
 
 class Detector:
@@ -131,6 +132,7 @@ class Vision:
     PHONE = 67     # COCO: cell phone
     VEHICLES = ("car", "truck", "bus", "motorcycle", "bicycle")   # for the parking
     VEHICLE_CONF = 0.25        # bikes close in a row score low; parking.py waits for a still one
+    OBJECT_CONF = 0.3          # a bottle, a book, a laptop... for the Search page
 
     def __init__(self, cfg):
         import torch
@@ -153,6 +155,7 @@ class Vision:
         self.person = ids.get("person", self.PERSON)
         self.phone = ids.get("cell phone", ids.get("phone", self.PHONE))
         self.vehicles = {ids[n]: n for n in self.VEHICLES if n in ids}
+        self.names = {int(k): str(v) for k, v in self.model.names.items()}
         self.configure(cfg)
         self.detect([np.zeros((480, 640, 3), np.uint8)])       # warm up
 
@@ -169,12 +172,11 @@ class Vision:
         """Settings that do not need the model reloaded."""
         self.imgsz = int(cfg.get("imgsz", 480))
         self.conf = float(cfg.get("confidence", 0.4))
-        self.classes = [self.person, self.phone] if cfg.get("phone", True) \
-            else [self.person]
-        park = config.get("parking")
-        if park.get("enabled", True) and park.get("cameras"):
-            # Vehicles in the same pass: the parking costs no extra model run.
-            self.classes += list(self.vehicles)
+        self.want_phone = bool(cfg.get("phone", True))
+        # Every object the model knows, in the same pass as people: the
+        # parking needs vehicles, the Search page any of the 80 objects, and
+        # leaving classes out saves no model time.
+        self.classes = None
         sens = config.get("phone").get("sensitivity", "medium")
         self.phone_conf = self.PHONE_CONF.get(sens, self.PHONE_CONF["medium"])
 
@@ -199,8 +201,11 @@ class Vision:
                     elif int(k) in self.vehicles:
                         if s >= self.VEHICLE_CONF:
                             seen.vehicles.append(box + (self.vehicles[int(k)],))
-                    elif s >= self.phone_conf:
-                        seen.phones.append(box)
+                    elif int(k) == self.phone and self.want_phone:
+                        if s >= self.phone_conf:
+                            seen.phones.append(box)
+                    elif s >= self.OBJECT_CONF:
+                        seen.objects.append(box + (self.names.get(int(k), str(int(k))),))
             out.append(seen)
         return out
 
@@ -549,6 +554,12 @@ class PhoneUse(Detector):
             st = self._state.get(camera)
             return st["on_phone"] if st else 0
 
+    def using(self, camera):
+        """The people on a phone right now (their boxes) - for the Search page."""
+        with self._lock:
+            st = self._state.get(camera)
+            return list(st["using"]) if st else []
+
     def forget(self, camera):
         with self._lock:
             self._state.pop(camera, None)
@@ -807,7 +818,7 @@ class Smoother:
             tracks[:] = live + [t for t in tracks if t["misses"] and
                                 not any(_same_person(t["box"], l["box"]) for l in live)]
             counted = [t["box"] for t in tracks if self._counts(t)]
-        return Seen(counted, seen.phones, seen.vehicles)
+        return Seen(counted, seen.phones, seen.vehicles, seen.objects)
 
     def _counts(self, t):
         return t["hits"] >= 2 or t["best"] >= self.CONFIRM_SCORE
@@ -828,7 +839,7 @@ class Smoother:
 
 class Track:
     """What the pipeline remembers about one camera."""
-    __slots__ = ("seq", "ts", "frame_ts", "small", "seen", "ver", "busy", "waiting")
+    __slots__ = ("seq", "ts", "frame_ts", "small", "seen", "ver", "busy", "waiting", "size", "jpg")
 
     def __init__(self):
         self.seq = -1           # frame last looked at
@@ -839,11 +850,24 @@ class Track:
         self.ver = 0            # bumps on every result, for image caches
         self.busy = False
         self.waiting = False    # a detection waits on the routine re-check
+        self.size = None        # (width, height) of the picture looked at
+        self.jpg = None         # that picture, small - the Search shows it and reads colours off it
 
 
 def _small(frame):
     tiny = cv2.resize(frame, (80, 60), interpolation=cv2.INTER_AREA)
     return cv2.GaussianBlur(cv2.cvtColor(tiny, cv2.COLOR_BGR2GRAY), (5, 5), 0)
+
+
+THUMB_W = 640               # the picture kept from each check, for the Search
+
+
+def _thumb(frame):
+    h, w = frame.shape[:2]
+    if w > THUMB_W:
+        frame = cv2.resize(frame, (THUMB_W, max(1, int(h * THUMB_W / w))), interpolation=cv2.INTER_AREA)
+    ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+    return buf.tobytes() if ok else None
 
 
 class Pipeline:
@@ -877,6 +901,8 @@ class Pipeline:
         self._runs = deque(maxlen=400)        # (end, frames, seconds)
         self._lag = {config.COUNT: None, config.RESTRICTED: None}
         self._running_since = 0.0
+        self._look_all_at = 0.0     # "Check now" on the Search page
+        self._jobs = deque()        # run_soon(): the AI search, one picture each
 
     # ---------- wiring ----------
 
@@ -946,6 +972,15 @@ class Pipeline:
                 self._wake.clear()
                 continue
             picks = self._pick()
+            with self._lock:
+                # A search job goes before counting, never before a restricted check.
+                job = self._jobs.popleft() if self._jobs and not (picks and picks[0][0] == 0) else None
+            if job is not None:
+                try:
+                    job()
+                except Exception:                         # noqa: BLE001
+                    log.exception("search job failed")
+                continue
             if not picks:
                 self._wake.wait(0.2)
                 self._wake.clear()
@@ -1005,7 +1040,8 @@ class Pipeline:
 
         return Seen([b for b in seen.people if keep(b)],
                     [b for b in seen.phones if keep(b)],
-                    [b for b in seen.vehicles if keep(b)])
+                    [b for b in seen.vehicles if keep(b)],
+                    [b for b in seen.objects if keep(b)])
 
     def group(self, camera):
         return self._group_map().get(camera, config.COUNT)
@@ -1039,13 +1075,14 @@ class Pipeline:
             if seq == tr.seq or now - fts > self.STALE:
                 continue
             age = now - tr.ts if tr.ts else 1e9
+            forced = tr.ts < self._look_all_at          # asked for a fresh look (Search page)
             if group == config.WASHROOM:
                 # Its door watch says how often: twice a second while the door
                 # is in use, about once a second while somebody walks near it,
                 # else once a minute - a busy corridor elsewhere costs nothing.
                 gap, rank = wash.schedule(cam) if wash else (60.0, 3)
-                if age >= gap:
-                    due.append((rank, -age, cam, frame, fts, seq, group, None))
+                if age >= gap or forced:
+                    due.append((min(rank, 2) if forced else rank, -age, cam, frame, fts, seq, group, None))
                 continue
             restricted = group == config.RESTRICTED
             watched = self._watched(cam)
@@ -1059,7 +1096,9 @@ class Pipeline:
                 rank = 1 if watched else 2
 
             small = None
-            if tr.seen is not None and not tr.busy and \
+            if forced and not restricted:
+                pass                                        # looked at now, moving or not
+            elif tr.seen is not None and not tr.busy and \
                     age < (self.HEARTBEAT if restricted else refresh):
                 small = _small(frame)
                 if not self._moved(tr.small, small, group):
@@ -1112,11 +1151,13 @@ class Pipeline:
             # raw sighting - an alert must not wait for a second look.
             if group == config.COUNT:
                 seen = self._smooth.update(cam, seen, fts)
+            jpg = _thumb(frame)
             with self._lock:
                 tr = self._tracks.get(cam)
                 if tr is None:
                     continue                                # removed meanwhile
                 tr.seq, tr.ts, tr.frame_ts, tr.seen = seq, done, fts, seen
+                tr.size, tr.jpg = (frame.shape[1], frame.shape[0]), jpg
                 tr.small = small if small is not None else _small(frame)
                 tr.ver += 1
             busy = group == config.COUNT and self._smooth.busy(cam)
@@ -1188,6 +1229,44 @@ class Pipeline:
         with self._lock:
             tr = self._tracks.get(camera)
             return tr.ver if tr else 0
+
+    def look_all(self):
+        """Look at every camera again soon, moving or not (Search -> Check now).
+        Restricted cameras still come first; this PC needs a minute or so."""
+        with self._lock:
+            self._look_all_at = time.time()
+        self._wake.set()
+
+    def class_names(self):
+        """Everything the model can find, by name (the Search page)."""
+        vision = self._vision
+        return sorted(vision.names.values()) if vision else []
+
+    def detector(self, key):
+        return self._det(key)
+
+    def latest(self):
+        """What the last check of each camera found, for the Search page:
+        {camera: {"at": when, "seen": Seen, "size": (w, h), "live": frames
+        coming now}}, and since when a "Check now" is waiting (0 = none)."""
+        now = time.time()
+        with self._lock:
+            out = {cam: {"at": tr.ts, "seen": tr.seen, "size": tr.size, "jpg": tr.jpg,
+                         "live": now - self._inbox.get(cam, (None, 0.0))[1] < 15}
+                   for cam, tr in self._tracks.items() if tr.seen is not None and tr.size}
+            return out, self._look_all_at
+
+    def run_soon(self, job):
+        """Run job() on the detection worker - after any restricted-area check
+        that is due, before counting checks. The AI search does its pictures
+        this way, one at a time, so an alert never waits behind it."""
+        with self._lock:
+            self._jobs.append(job)
+        self._wake.set()
+
+    def drop_jobs(self):
+        with self._lock:
+            self._jobs.clear()
 
     def live(self):
         """Per-camera numbers for the dashboard, in one go."""

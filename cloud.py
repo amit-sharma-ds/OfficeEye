@@ -50,7 +50,8 @@ PASSWORD = os.environ.get("OFFICEEYE_PASSWORD", "")
 PUSH_TOKEN = os.environ.get("OFFICEEYE_PUSH_TOKEN", "")
 READ_ONLY = "This is the cloud view - change it on the office PC."
 # Read on the office PC, not here: a network scan, the office's photo folder.
-RELAY_GET = ("/api/scan", "/api/photos/usage", "/api/push/key")
+RELAY_GET = ("/api/scan", "/api/photos/usage", "/api/push/key", "/api/search", "/api/search/ai",
+             "/api/health")
 OFFICE_GONE = 90          # seconds without a push before the office counts as away
 # New on every start of the cloud copy. Render's free plan starts with an
 # empty disk each time, so a new BOOT tells the office to send its last

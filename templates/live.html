@@ -6,6 +6,21 @@
 <p class="sub">Every camera's latest picture with what it sees - people in view,
    phones in use, anybody in a restricted area. Click a camera to watch it live.</p>
 
+<form class="search-box" id="sform" role="search">
+  <input type="search" id="sq" value="{{ query or '' }}" maxlength="100" autocomplete="off"
+         placeholder="Search what the cameras see - kitne log, laal t-shirt, botal, helmet..."
+         aria-label="Search what the cameras see">
+  <button class="primary" type="submit">Search</button>
+</form>
+<div id="sres" hidden>
+  <p class="search-sum" id="s-sum"></p>
+  <div class="search-meta">
+    <span id="s-meta"></span>
+    <button class="ghost sm" id="s-check" type="button">Check now</button>
+    <button class="ghost sm" id="s-clear" type="button">Clear search</button>
+  </div>
+</div>
+
 <div class="wall-head">
   <div class="chips" id="filters">
     <button class="on" data-f="all">All <b></b></button>
@@ -99,21 +114,25 @@ function paintWall(s) {
     if ((c.on_phone || 0) > 0) counts.phone++;
     if (c.state !== 'connected') counts.offline++;
 
-    tile.hidden = !matches(tile, c);
+    const hit = found && found[tile.dataset.id];
+    tile.hidden = found ? !hit : !matches(tile, c);
     if (!tile.hidden) shown++;
-    refreshImage(tile, c);
+    if (!hit) refreshImage(tile, c);       // a search result keeps the picture it was found in
 
     const alert = !!(c.alert && c.alert.active);
     tile.classList.toggle('alert', alert);
     const n = $('.n', tile), ph = $('.ph', tile);
-    if (c.group === 'restricted') {
+    if (hit) {
+      n.hidden = false;
+      n.textContent = many(hit.count, sLabel);
+    } else if (c.group === 'restricted') {
       n.hidden = !alert;
       n.textContent = alert ? `ALERT - ${c.alert.count}` : '';
     } else {
       n.hidden = c.count == null;
       n.textContent = c.count == null ? '' : plural(c.count, 'person');
     }
-    ph.hidden = !c.on_phone;
+    ph.hidden = !c.on_phone || !!hit;
     ph.textContent = c.on_phone ? `${c.on_phone} on phone` : '';
 
     $('.dot', tile).className = 'dot ' + c.state;
@@ -124,7 +143,10 @@ function paintWall(s) {
     tile.title = c.state === 'error' ? c.error : '';
   });
   $$('#filters button').forEach(b => { $('b', b).textContent = counts[b.dataset.f]; });
-  if ($('#none')) $('#none').hidden = shown > 0;
+  if ($('#none')) {
+    $('#none').hidden = shown > 0 || (found && searching);
+    $('#none').textContent = found ? 'Not seen on any camera.' : 'No camera matches.';
+  }
 }
 
 $$('#filters button').forEach(b => b.onclick = () => {
@@ -133,6 +155,139 @@ $$('#filters button').forEach(b => b.onclick = () => {
   if (last) paintWall(last);
 });
 $('#find').oninput = () => { if (last) paintWall(last); };
+
+// ------------------------------------------------------------ search
+// What the cameras see: people, phones, vehicles and the model's 80 objects
+// come straight from each camera's last check (with a colour if one is
+// typed); anything else goes to the AI search, a camera at a time. The wall
+// then shows only the cameras it was found on, marked where it is.
+let found = null, sLabel = '', searching = false, aiTimer = null, againTimer = null;
+// "3 bottles", "1 car", "2 glasses", "5 people"
+const many = (n, label) => {
+  if (label.startsWith('people')) return `${n} ${n === 1 ? label.replace('people', 'person') : label}`;
+  const one = label.endsWith('ss') ? label : label.replace(/s$/, '');
+  return `${n} ${n === 1 ? one : one.endsWith('ss') ? one + 'es' : one + 's'}`;
+};
+const lookedAgo = (s) => s == null ? '' : s < 60 ? 'just now' : s < 3600 ? `${Math.round(s / 60)} min ago`
+  : `${Math.floor(s / 3600)} h ago`;
+
+function stopTimers() {
+  clearTimeout(aiTimer); clearTimeout(againTimer);
+  aiTimer = againTimer = null;
+}
+
+async function doSearch(text, quiet) {
+  text = (text || '').trim();
+  if (!text) { clearSearch(); return; }
+  stopTimers();
+  try { history.replaceState(null, '', '/live?q=' + encodeURIComponent(text)); } catch (e) {}
+  $('#sres').hidden = false;
+  if (!quiet) { $('#s-sum').textContent = 'Looking...'; $('#s-meta').textContent = ''; }
+  const r = await api('/api/search?q=' + encodeURIComponent(text));
+  if (!r.ok && r.ai) { startAI(text); return; }
+  searching = false;
+  if (!r.ok) { $('#s-sum').textContent = r.message; showFound({}); return; }
+  sLabel = r.label;
+  const hits = {};
+  r.cameras.filter(c => c.count).forEach(c => hits[c.id] = c);
+  $('#s-sum').innerHTML = r.total
+    ? `<b>${esc(many(r.total, r.label))}</b> on ${plural(r.found_in, 'camera')}`
+    : `<b>No ${esc(r.label.startsWith('people') ? r.label : r.label.replace(/s$/, ''))}</b> seen`;
+  $('#s-meta').textContent = (r.checking
+      ? `Looking again: ${r.checking.done} of ${r.checking.total} cameras done...`
+      : `${r.looked_at} cameras looked at - the oldest look ${lookedAgo(r.oldest)}`) +
+    (r.no_colour && r.no_colour.length ? ` - no colour in the night pictures of ${r.no_colour.join(', ')}` : '');
+  showFound(hits);
+  if (r.checking) againTimer = setTimeout(() => doSearch(text, true).catch(() => {}), 3000);
+}
+
+async function startAI(text) {
+  searching = true;
+  sLabel = text;
+  showFound({});
+  $('#s-sum').innerHTML = `<b>AI search</b> for "${esc(text)}"`;
+  $('#s-meta').textContent = 'Getting the AI model ready...';
+  const r = await post('/api/search/ai', {q: text});
+  if (!r.ok) { searching = false; $('#s-meta').textContent = r.message || 'The AI search could not start'; return; }
+  sLabel = r.words;
+  pollAI();
+}
+
+async function pollAI() {
+  const have = Object.keys(found || {}).join(',');
+  const r = await api('/api/search/ai?have=' + encodeURIComponent(have));
+  if (!found || !r.query) return;
+  const hits = {};
+  r.cameras.forEach(c => hits[c.id] = Object.assign({}, found[c.id], c));   // pictures sent once
+  $('#s-sum').innerHTML = `<b>AI search</b>: ` + (r.found_in
+    ? `<b>${esc(many(r.total_found, r.words))}</b> on ${plural(r.found_in, 'camera')}`
+    : `no ${esc(r.words)} ${r.running || !r.ready ? 'yet' : 'seen'}`);
+  $('#s-meta').textContent = !r.ok ? r.message
+    : !r.ready ? 'Getting the AI model ready... (the first time it downloads)'
+    : r.running ? `Looking: ${r.done} of ${r.total} cameras done...`
+    : `${r.total} cameras looked at, in ${r.seconds} s - the AI can miss things or mistake them`;
+  searching = r.ok && (r.running || !r.ready);
+  showFound(hits);
+  if (searching) aiTimer = setTimeout(() => pollAI().catch(() => {}), 2000);
+}
+
+// The picture each camera was found in, marked where the thing is.
+function showFound(hits) {
+  found = hits;
+  tiles.forEach(tile => {
+    const c = hits[tile.dataset.id];
+    tile.classList.toggle('found', !!c);
+    if (!c) {
+      if (tile.dataset.shot) { tile.dataset.shot = ''; $('img', tile).dataset.key = ''; }
+      return;
+    }
+    const key = (c.image || '').length + JSON.stringify(c.boxes);
+    if (!c.image || tile.dataset.shot === key) return;
+    tile.dataset.shot = key;
+    const pic = new Image();
+    pic.onload = () => {
+      const cv = document.createElement('canvas'), W = cv.width = pic.naturalWidth, H = cv.height = pic.naturalHeight;
+      const g = cv.getContext('2d');
+      g.drawImage(pic, 0, 0);
+      g.lineWidth = Math.max(3, W / 160);
+      g.strokeStyle = '#f59e0b';
+      c.boxes.forEach(([x1, y1, x2, y2]) => g.strokeRect(x1 * W, y1 * H, (x2 - x1) * W, (y2 - y1) * H));
+      $('img', tile).src = cv.toDataURL('image/jpeg', 0.85);
+    };
+    pic.src = c.image;
+  });
+  if (last) paintWall(last);
+}
+
+function clearSearch() {
+  stopTimers();
+  searching = false;
+  $('#sq').value = '';
+  $('#sres').hidden = true;
+  showFound({});
+  found = null;
+  if (last) paintWall(last);
+  try { history.replaceState(null, '', '/live'); } catch (e) {}
+}
+
+$('#sform').onsubmit = (e) => { e.preventDefault(); doSearch($('#sq').value).catch(() => {}); };
+$('#s-clear').onclick = clearSearch;
+// Every camera looked at again, then the search run again on the new pictures.
+$('#s-check').onclick = async () => {
+  stopTimers();
+  await post('/api/search/check', {});
+  const wait = async () => {
+    const r = await api('/api/search?q=people');
+    if (r.checking) {
+      $('#s-meta').textContent = `Looking again: ${r.checking.done} of ${r.checking.total} cameras done...`;
+      againTimer = setTimeout(() => wait().catch(() => {}), 3000);
+    } else {
+      doSearch($('#sq').value).catch(() => {});
+    }
+  };
+  setTimeout(() => wait().catch(() => {}), 1500);
+};
+if ($('#sq').value) doSearch($('#sq').value).catch(() => {});
 
 window.onStatus = (s) => { last = s; paintWall(s); };
 </script>

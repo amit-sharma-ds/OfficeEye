@@ -5,8 +5,8 @@
 <h1>Parking</h1>
 <p class="sub">The cars and bikes on the cameras that look at the parking: which vehicle came
    when, how long it stood and when it left - each with a photo and a close-up for the number
-   plate. A vehicle only driving past is not recorded: it has to stand at one spot for a few
-   minutes first.</p>
+   plate. A new vehicle that stops in the area is recorded within a minute, with its photo, and
+   the phones with Phone alerts on get an alert. One only driving past is not recorded.</p>
 
 <div class="tabs" role="tablist">
   <button class="on" data-tab="use" role="tab">Parking</button>
@@ -28,10 +28,10 @@
          cameras do (people count, night vision) does not change.</p>
     </div>
     <div class="rule">
-      <label for="r-min">Counts as parked after standing still for</label>
-      <div><input type="number" id="r-min" min="1" max="60" step="1"> minutes</div>
-      <p class="hint">A car that drives past, turns or looks for a place never stands still that
-         long, so it is not recorded. To keep a road or a neighbour's gate out, mark it with
+      <label for="r-sec">A new vehicle counts once it stands still for</label>
+      <div><input type="number" id="r-sec" min="10" max="600" step="5"> seconds</div>
+      <p class="hint">Then its photo is taken and the alert goes out. A car that drives past or
+         turns never stands still that long, so it is not recorded. To keep a road or a neighbour's gate out, mark it with
          <b>Ignore areas</b> on the camera's live view.</p>
     </div>
     <div class="row end">
@@ -128,7 +128,7 @@ let watched = [];
 function paintRules(r) {
   const x = r.rules;
   $('#r-on').checked = x.enabled !== false;
-  $('#r-min').value = x.park_minutes || 2;
+  $('#r-sec').value = x.arrive_seconds || 20;
   watched = x.enabled === false ? [] : (x.cameras || []);
   if (!camsTouched) {                     // never undo ticks not saved yet
     const on = new Set(x.cameras || []);
@@ -142,7 +142,7 @@ let camsTouched = false;
 $('#r-cams').onchange = () => { camsTouched = true; };
 $('#r-save').onclick = async () => {
   const r = await post('/api/parking/rules', {
-    enabled: $('#r-on').checked, park_minutes: $('#r-min').value,
+    enabled: $('#r-on').checked, arrive_seconds: $('#r-sec').value,
     cameras: $$('#r-cams input').filter(i => i.checked).map(i => i.value),
   });
   $('#r-status').textContent = r.message;

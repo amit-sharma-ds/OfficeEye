@@ -4,6 +4,7 @@ data/
 .env
 # Models download themselves on first start (Ultralytics releases).
 *.pt
+*.ts
 runs/
 *.log
 .claude/

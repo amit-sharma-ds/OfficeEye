@@ -1,0 +1,166 @@
+{% extends "base.html" %}
+{% block title %}Camera health{% endblock %}
+
+{% block body %}
+<h1>Camera health</h1>
+<p class="sub">Every camera is checked twice a minute: is it on, is its picture clear, is something
+   in front of the lens, does it still point the usual way? A problem shows here in red, as a note
+   on every page and as a phone alert.</p>
+
+<div class="h-banner" id="h-banner"><b>Checking the cameras&hellip;</b><span></span></div>
+
+<div class="stats four">
+  <div class="stat">
+    <div class="stat-k">Working fine</div>
+    <div class="stat-n ok" id="h-ok">-</div>
+    <div class="stat-sub">clear picture, usual view</div>
+  </div>
+  <div class="stat">
+    <div class="stat-k">Need a look</div>
+    <div class="stat-n" id="h-bad">-</div>
+    <div class="stat-sub">covered, moved, blurry or stuck</div>
+  </div>
+  <div class="stat">
+    <div class="stat-k">Offline</div>
+    <div class="stat-n" id="h-off">-</div>
+    <div class="stat-sub">no video from the camera</div>
+  </div>
+  <div class="stat">
+    <div class="stat-k">Not checked now</div>
+    <div class="stat-n" id="h-wait">-</div>
+    <div class="stat-sub">dark room or still learning</div>
+  </div>
+</div>
+
+<div class="h-grid" id="h-grid"></div>
+
+<div class="card">
+  <div class="card-head"><h2>What the colours mean</h2></div>
+  <div class="h-legend">
+    {% for key in ['ok', 'offline', 'covered', 'moved', 'blurry', 'stuck', 'dark', 'learning'] %}
+    <div><span class="h-chip s-{{ key }}">{{ states[key][0] }}</span> {{ states[key][1] }}</div>
+    {% endfor %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <h2>Problems in the last 7 days</h2>
+    <span class="hint-inline" id="h-span"></span>
+  </div>
+  <div class="table-wrap">
+    <table class="h-hist">
+      <thead><tr><th></th><th>Camera</th><th>Problem</th><th>From</th><th>To</th><th>How long</th></tr></thead>
+      <tbody id="h-rows"><tr><td colspan="6" class="empty">Loading&hellip;</td></tr></tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const CAMS = {{ cameras|map(attribute='id')|list|tojson }}, CAM_NAMES = {};
+{{ cameras|map(attribute='name')|list|tojson }}.forEach((n, i) => CAM_NAMES[CAMS[i]] = n);
+const camName = (id) => names[id] || CAM_NAMES[id] || id;
+// Worst first: what needs somebody to go and look.
+const ORDER = ['offline', 'covered', 'moved', 'stuck', 'blurry', 'learning', 'dark', 'off', 'ok'];
+const dur = (s) => s == null ? '' : s < 60 ? `${s} s` : s < 3600 ? `${Math.floor(s / 60)} min`
+  : s < 86400 ? `${Math.floor(s / 3600)} h ${String(Math.floor(s % 3600 / 60)).padStart(2, '0')} min`
+  : `${Math.floor(s / 86400)} days ${Math.floor(s % 86400 / 3600)} h`;
+const when = (iso) => !iso ? '' : iso.slice(0, 10) === today() ? iso.slice(11, 16)
+  : new Date(iso).toLocaleDateString([], {day: 'numeric', month: 'short'}) + ' ' + iso.slice(11, 16);
+let data = null, picAt = 0;
+
+async function load() {
+  data = await api('/api/health');
+  paint();
+}
+
+function paint() {
+  const cams = data.cameras, ids = Object.keys(cams);
+  const n = (keys) => ids.filter(id => keys.includes(cams[id].state)).length;
+  const bad = ids.filter(id => cams[id].problem);
+  $('#h-ok').textContent = n(['ok']);
+  $('#h-bad').textContent = n(['covered', 'moved', 'blurry', 'stuck']);
+  $('#h-bad').classList.toggle('warn', n(['covered', 'moved', 'blurry', 'stuck']) > 0);
+  $('#h-off').textContent = n(['offline']);
+  $('#h-off').classList.toggle('warn', n(['offline']) > 0);
+  $('#h-wait').textContent = n(['dark', 'learning', 'off']);
+
+  const banner = $('#h-banner');
+  banner.className = 'h-banner ' + (bad.length ? 'bad' : 'good');
+  const fine = n(['ok']), learning = n(['learning']), dark = n(['dark']);
+  const others = [learning ? `${learning} still learning their normal picture` : '',
+                  dark ? `${dark} too dark to check` : ''].filter(Boolean).join(', ');
+  $('b', banner).textContent = bad.length
+    ? `${plural(bad.length, 'camera')} need${bad.length === 1 ? 's' : ''} a look`
+    : !fine ? 'Learning what each camera normally shows (about 10 minutes)'
+    : fine === ids.length - n(['off']) ? `All ${fine} cameras are working fine`
+    : `No problem found - ${fine} cameras working fine`;
+  $('span', banner).textContent = bad.length
+    ? bad.map(id => `${camName(id)}: ${cams[id].title.toLowerCase()}`).join(' · ')
+    : 'Checked twice a minute. Nothing is covered, moved or offline' + (others ? ` (${others}).` : '.');
+
+  const fresh = Date.now() - picAt > 30000;          // pictures again every half minute
+  if (fresh) picAt = Date.now();
+  const sorted = ids.sort((a, b) => ORDER.indexOf(cams[a].state) - ORDER.indexOf(cams[b].state)
+                                    || camName(a).localeCompare(camName(b), [], {numeric: true}));
+  const grid = $('#h-grid');
+  sorted.forEach(id => {
+    const c = cams[id];
+    let card = grid.querySelector(`[data-id="${CSS.escape(id)}"]`);
+    if (!card) {
+      card = document.createElement('div');
+      card.dataset.id = id;
+      card.innerHTML = `<div class="h-pic" role="button" tabindex="0"><img alt=""><span class="h-chip"></span></div>
+        <div class="h-body"><b></b><span class="h-text"></span><span class="h-since"></span></div>`;
+      $('.h-pic', card).onclick = () => openPhotos([
+        {src: `/frame/${encodeURIComponent(id)}.jpg?w=1280&overlay=0&caption=0&t=${Date.now()}`, caption: `${camName(id)} - now`},
+        ...(cams[id].has_normal ? [{src: `/health/normal/${encodeURIComponent(id)}.jpg?t=${Date.now()}`,
+                                    caption: `${camName(id)} - its normal view`}] : [])], 0);
+    }
+    grid.appendChild(card);                          // keeps the order: worst first
+    card.className = 'h-card s-' + c.state;
+    $('.h-chip', card).className = 'h-chip s-' + c.state;
+    $('.h-chip', card).textContent = c.title;
+    $('b', card).textContent = camName(id);
+    $('.h-text', card).textContent = c.text;
+    $('.h-since', card).innerHTML = c.problem
+      ? `Since ${esc(when(c.since))} - ${esc(dur(c.for))}` +
+        (c.state === 'moved' ? ` <button class="ghost sm" data-normal="${esc(id)}">This is its normal view now</button>` : '')
+      : c.state === 'ok' && c.match != null ? `Matches its normal view ${Math.round(c.match * 100)}%` : '';
+    const img = $('img', card);
+    if (fresh || !img.src) img.src = `/frame/${encodeURIComponent(id)}.jpg?w=480&overlay=0&caption=0&t=${Date.now()}`;
+  });
+  $$('[data-normal]', grid).forEach(b => b.onclick = async (e) => {
+    e.stopPropagation();
+    const r = await post(`/api/health/${encodeURIComponent(b.dataset.normal)}/normal`);
+    toast({title: camName(b.dataset.normal), body: r.message, kind: 'info'});
+    load().catch(() => {});
+  });
+
+  const rows = data.history;
+  $('#h-span').textContent = plural(rows.length, 'problem');
+  $('#h-rows').innerHTML = rows.length ? rows.map((r, i) => {
+    const m = r.meta, th = eventThumb(r);
+    const from = m.started || r.ts, to = m.ended;
+    const secs = Math.round(((to ? new Date(to) : new Date()) - new Date(from)) / 1000);
+    return `<tr class="${to ? '' : 'open'}" data-i="${i}">` +
+      `<td>${th ? `<img class="h-th" src="${esc(th)}" alt="">` : ''}</td>` +
+      `<td>${esc(camName(r.camera))}</td>` +
+      `<td><span class="h-chip s-${esc(r.label)}">${esc(m.title || r.label)}</span></td>` +
+      `<td>${esc(when(from))}</td><td>${to ? esc(when(to)) : '<b>still now</b>'}</td>` +
+      `<td>${esc(dur(secs))}</td></tr>`;
+  }).join('') : '<tr><td colspan="6" class="empty">No problem in the last 7 days.</td></tr>';
+  $$('#h-rows tr[data-i]').forEach(tr => tr.onclick = () => {
+    const r = rows[+tr.dataset.i];
+    const list = (r.meta.photos || []).map(p => ({src: '/photos/' + p.full,
+      caption: `${camName(r.camera)} - ${p.what === 'normal view' ? 'its normal view before' : 'when it started'}`}));
+    if (list.length) openPhotos(list, 0);
+  });
+}
+
+load().catch(() => {});
+setInterval(() => { if ($$('.modal').every(m => m.hidden)) load().catch(() => {}); }, 15000);
+</script>
+{% endblock %}

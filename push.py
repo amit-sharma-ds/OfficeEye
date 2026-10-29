@@ -3,8 +3,9 @@
 A phone that turns on "Phone alerts" (in the app, on the cloud link or on
 this PC) hands its push address to this office PC, which keeps them in
 data/push.json together with its own key pair (VAPID). A thread watches the
-records: a new restricted-area alert or something at night (Night vision)
-is sent to every phone at once - the app does not have to be open.
+records: a new restricted-area alert, something at night (Night vision), a
+new vehicle in the parking or a camera with a problem (Camera health) is
+sent to every phone at once - the app does not have to be open.
 
 The office PC sends them itself (it has the records and the key), so the
 cloud copy needs no secret. Push works only on https or localhost: on the
@@ -153,6 +154,25 @@ class Push:
                      "lights off": "Night - lights switched off"}.get(what, "Night - " + what)
             return {"title": title, "body": "{} at {}".format(cam, at), "url": "/night",
                     "tag": "night-{}".format(row["id"]), "urgent": what == "person"}
+        meta = row.get("meta") or {}
+        if isinstance(meta, str):              # rows_after() gives the meta as written
+            try:
+                meta = json.loads(meta)
+            except ValueError:
+                meta = {}
+        shot = (meta.get("photos") or [{}])[0].get("full")
+        image = "/photos/" + shot if shot else None
+        if row["kind"] == "parking" and not meta.get("was_there"):
+            late = bool(meta.get("after_hours"))
+            what = {"car": "Car", "bike": "Bike", "cycle": "Cycle"}.get(meta.get("type"), "Vehicle")
+            return {"title": "New vehicle{} - {}".format(" after hours" if late else "", cam),
+                    "body": "{} came at {}".format(what, at), "url": "/parking", "image": image,
+                    "tag": "parking-{}".format(row["id"]), "urgent": late}
+        if row["kind"] == "camera_health":
+            return {"title": "{} - {}".format(cam, meta.get("title") or row.get("label")),
+                    "body": "{} Since {}.".format(meta.get("text") or "", str(meta.get("started") or "")[11:16]),
+                    "url": "/health", "image": image, "tag": "health-{}".format(row["id"]),
+                    "urgent": row.get("label") in ("covered", "moved")}
         return None
 
     def _run(self):

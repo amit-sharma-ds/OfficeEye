@@ -156,6 +156,22 @@ def latest_id(kind):
     return row["id"] or 0
 
 
+def latest_of(kinds):
+    """Newest id among these kinds (0 if none)."""
+    with _lock:
+        row = _get().execute("SELECT MAX(id) AS id FROM events WHERE kind IN ({})".format(
+            ",".join("?" * len(kinds))), list(kinds)).fetchone()
+    return row["id"] or 0
+
+
+def after_of(kinds, after_id, limit=20):
+    """Rows of these kinds newer than after_id, oldest first."""
+    with _lock:
+        rows = _get().execute("SELECT * FROM events WHERE id > ? AND kind IN ({}) ORDER BY id LIMIT ?".format(
+            ",".join("?" * len(kinds))), [after_id, *kinds, int(limit)]).fetchall()
+    return [_row(r) for r in rows]
+
+
 def get(event_id):
     with _lock:
         row = _get().execute("SELECT * FROM events WHERE id = ?",

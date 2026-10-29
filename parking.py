@@ -4,9 +4,12 @@ No model of its own - the counting cameras' check looks for vehicles in the
 same pass as people (detection.Vision), so the parking costs nothing more.
 On the cameras ticked under Parking -> Rules & cameras:
 
-1. Parked, not passing: a vehicle seen at one spot (its box hardly moves)
-   for the minutes set is parked. One that drives past, turns or looks for
-   a place never stands still that long, so it is never recorded.
+1. A new vehicle, not one passing: a vehicle seen at one spot (its box
+   hardly moves) in two checks, the seconds set apart (20), has come. Its
+   record starts then, with the photo of its coming, and the phones get an
+   alert (push.py). One that drives past or turns never stands still that
+   long, so it is never recorded. Parking cameras are looked at about every
+   half minute for this, however busy the PC is (waiting()).
 2. One record per vehicle per stay: when it came, kept up to date while it
    stands there, when it left and how long it stood.
 3. Photos only of what happens - never again and again of a vehicle just
@@ -28,8 +31,10 @@ On the cameras ticked under Parking -> Rules & cameras:
    get the time it was last seen as their end.
 
 Marked on a record: "after hours" - it came while the office was closed;
-"was there" - it already stood there when the watch began, so it came
-before its first time shows.
+"was there" - it already stood there when the watch began, or the check
+before showed it at that spot too (the model just missed it - a bike half
+hidden behind others), so it came before its first time shows: no photo of
+its coming, no alert.
 """
 
 import logging
@@ -85,6 +90,7 @@ class Parking(Detector):
     NEAR = 0.5                 # ... within this share of the car's size around it
     REOPEN = 600.0             # back at the same spot this soon after "leaving": it never left
     SAME_LOOK = 0.7            # ... if it looks the same (grey picture match, -1 to 1)
+    BEFORE_W = 640             # the picture of the check before, kept this wide
 
     def __init__(self):
         super().__init__()
@@ -137,6 +143,16 @@ class Parking(Detector):
         g -= g.mean()
         n = float(np.linalg.norm(g))
         return g / n if n > 1e-6 else None
+
+    def _was_there(self, before, frame, v):
+        """Did the check before already show this vehicle at its spot? Then
+        it did not just come - the model only missed it then."""
+        if before is None:
+            return False
+        k = before.shape[1] / float(frame.shape[1])
+        then = self._look(before, tuple(c * k for c in v[:4]))
+        now = self._look(frame, v)
+        return then is not None and now is not None and float(np.dot(then, now)) >= self.SAME_LOOK
 
     @classmethod
     def _near(cls, car, people):
@@ -206,11 +222,11 @@ class Parking(Detector):
             known = camera in self._state
         orphans = [] if known else self._open_records(camera)
         h, w = frame.shape[:2]
-        need = max(0.5, float(rules.get("park_minutes", 2))) * 60
+        need = max(10.0, float(rules.get("arrive_seconds", 20)))
         new, keep, ends, lost, snaps, back, outs = [], [], [], [], [], [], []
         with self._lock:
             st = self._state.setdefault(camera, {"tracks": [], "since": ts, "orphans": orphans,
-                                                 "ended": []})
+                                                 "ended": [], "before": None})
             st["ended"] = [e for e in st["ended"] if ts - e["at"] <= self.REOPEN]
             tracks, found = st["tracks"], self._vehicles(seen)
             # Best overlaps first, over all vehicles at once: in a tight row of
@@ -243,7 +259,7 @@ class Parking(Detector):
                 if j in got_v:
                     continue
                 t = self._track(v, ts)
-                t["was_there"] = ts - st["since"] <= self.WAS_THERE
+                t["was_there"] = ts - st["since"] <= self.WAS_THERE or self._was_there(st["before"], frame, v)
                 for r in st["orphans"]:          # a vehicle whose record is still open?
                     box = self._box_of(r, w, h)
                     if box and _iou(box, v) >= self.SAME_SPOT:
@@ -296,6 +312,10 @@ class Parking(Detector):
                     if near:
                         t["out"] = "taking"
                         snaps.append((t, "out", near))
+        before = cv2.resize(frame, (self.BEFORE_W, max(1, int(h * self.BEFORE_W / w))),
+                            interpolation=cv2.INTER_AREA) if w > self.BEFORE_W else frame.copy()
+        with self._lock:
+            st["before"] = before
         if snaps:
             # The moment is kept (as a jpg, small) - a photo is made of it only
             # if the vehicle turns out to have parked, or to have gone.
@@ -386,12 +406,11 @@ class Parking(Detector):
         return ("{} parked".format(n), False) if n else None
 
     def waiting(self, camera):
-        """A vehicle not parked yet, or a parked one not seen just now: the
-        camera's routine re-check (every 30 s or so) settles it, even on a
-        busy PC where quiet cameras are otherwise looked at last."""
+        """Every parking camera: a vehicle coming in has to be seen within
+        the half minute or so of its routine re-check, even on a busy PC
+        where quiet cameras are otherwise looked at last."""
         with self._lock:
-            st = self._state.get(camera)
-            return bool(st and any(t["event"] is None or t["misses"] for t in st["tracks"]))
+            return camera in self._state
 
     def parked(self, camera):
         with self._lock:

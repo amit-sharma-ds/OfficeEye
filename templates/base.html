@@ -17,6 +17,11 @@
     <div class="brand"><img class="brand-icon" src="{{ url_for('static', filename='icon.svg') }}" alt="">
       <span>OfficeEye<small>office camera monitor</small></span></div>
 
+    <form class="side-search" action="/live" role="search">
+      <input type="search" name="q" value="{{ query or '' }}" maxlength="100"
+             placeholder="Search: log, laal t-shirt, botal..." aria-label="Search what the cameras see">
+    </form>
+
     <nav>
       <a href="/"           class="{{ 'on' if page == 'dashboard' }}">Dashboard</a>
       <a href="/live"       class="{{ 'on' if page == 'live' }}">Live cameras</a>
@@ -29,6 +34,8 @@
       <a href="/sleeping"   class="{{ 'on' if page == 'sleeping' }}">Sleeping / Head down</a>
       <a href="/night"      class="{{ 'on' if page == 'night' }}">Night vision</a>
       <a href="/parking"    class="{{ 'on' if page == 'parking' }}">Parking</a>
+      <a href="/health"     class="{{ 'on' if page == 'health' }}">Camera health
+        <span class="badge" id="health-badge" hidden></span></a>
       <a href="/cameras"    class="{{ 'on' if page == 'cameras' }}">Cameras</a>
       <a href="/running-time" class="{{ 'on' if page == 'running' }}">Camera running time</a>
       <a href="/settings"   class="{{ 'on' if page == 'settings' }}">Settings</a>
@@ -395,6 +402,30 @@
       beep(3);
     }
 
+    // A new vehicle in the parking, a camera with a problem: a note on any page.
+    let seenNotice = null;
+    async function newNotices(latest) {
+      if (latest == null) return;
+      if (seenNotice === null) { seenNotice = latest; return; }
+      if (latest <= seenNotice) return;
+      const from = seenNotice;
+      seenNotice = latest;
+      const {notices} = await api('/api/notices?after=' + from);
+      notices.forEach(n => {
+        const name = names[n.camera] || n.camera, m = n.meta || {};
+        const car = n.kind === 'parking';
+        toast({
+          kind: car ? '' : 'alert',
+          title: car ? `New vehicle - ${name}` : `${name} - ${m.title || n.label}`,
+          body: car ? `${({car: 'Car', bike: 'Bike', cycle: 'Cycle'})[m.type] || 'Vehicle'} came at ${clock(m.started || n.ts).slice(0, 5)}`
+                    : (m.text || ''),
+          img: eventThumb(n),
+          onclick: () => { location.href = car ? '/parking' : '/health'; },
+        });
+      });
+      if (notices.length) beep(1);
+    }
+
     // Cloud view: how fresh is what the office PC sent?
     function paintCloud(c) {
       const bar = $('#cloud-bar');
@@ -444,6 +475,8 @@
       const inUse = Object.values(s.cameras).filter(c => c.washroom && c.washroom.in_use).length;
       $('#wash-badge').hidden = !inUse;
       $('#wash-badge').textContent = inUse ? 'door' : '';
+      $('#health-badge').hidden = !s.health_problems;
+      $('#health-badge').textContent = s.health_problems || '';
       document.title = n ? `(${n}) ALERT - ${pageTitle}` : pageTitle;
 
       const d = s.detection;
@@ -453,6 +486,7 @@
         : d.state === 'error' ? 'Detection error' : 'Detection: off';
 
       newAlerts(s.latest_alert).catch(() => {});
+      newNotices(s.latest_notice).catch(() => {});
       paintLive(s);
       if (window.onStatus) window.onStatus(s);
     }
