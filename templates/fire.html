@@ -129,7 +129,9 @@ function showTab(name) {
 $$('.tabs button').forEach(b => b.onclick = () => showTab(b.dataset.tab));
 try { const t = localStorage.getItem('pc-fire-tab'); if (t === 'rules' || t === 'test') showTab(t); } catch (e) {}
 
-const camName = (id) => names[id] || id;
+const CAM_NAMES = {};                     // names before the first status poll arrives
+{{ cameras|map(attribute='id')|list|tojson }}.forEach((id, i) => CAM_NAMES[id] = {{ cameras|map(attribute='name')|list|tojson }}[i]);
+const camName = (id) => names[id] || CAM_NAMES[id] || id;
 const STATE = {clear: ['Clear', 's-ok'], checking: ['Checking something', 's-stuck'],
                fire: ['FIRE', 's-offline'], smoke: ['SMOKE', 's-offline'],
                off: ['Not watched', 's-off'], waiting: ['Not checked yet', 's-learning']};
