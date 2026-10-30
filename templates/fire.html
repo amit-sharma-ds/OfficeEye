@@ -137,7 +137,9 @@ const STATE = {clear: ['Clear', 's-ok'], checking: ['Checking something', 's-stu
                off: ['Not watched', 's-off'], waiting: ['Not checked yet', 's-learning']};
 const REASON = {'wrong colour': 'not fire-coloured', 'never changed': 'never flickered (a lamp, a poster)',
                 'learnt not fire': 'a spot learnt as not fire', 'on a person': 'on a person (clothes)',
-                'too small': 'too small', 'ignore area': 'in an ignore area', 'smoke is switched off': 'smoke switched off'};
+                'too small': 'too small', 'ignore area': 'in an ignore area', 'smoke is switched off': 'smoke switched off',
+                'not like smoke': 'not like smoke (glare, a person)', 'there before': 'there before (not a new flame)',
+                'learning the room': 'still learning the room'};
 const dur = (s) => s == null ? '' : s < 60 ? `${s} s` : s < 3600 ? `${Math.floor(s / 60)} min ${String(s % 60).padStart(2, '0')} s`
   : `${Math.floor(s / 3600)} h ${String(Math.floor(s % 3600 / 60)).padStart(2, '0')} min`;
 let data = null, shown = [], camsTouched = false;

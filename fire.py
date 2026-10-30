@@ -108,6 +108,17 @@ class FireWatch:
     PHOTO_EVERY = 15.0
     MAX_PHOTOS = 4
     MAX_SPOTS = 40         # learnt "not fire" spots per camera
+    BG_SIZE = (320, 180)   # the learnt room (each camera), compared with the spot
+    BG_RATE = 0.1          # how fast it learns, per check with nothing suspect
+    VEIL = 0.8             # smoke: outlines behind it this much fainter than in the room
+    PLAIN = 6.0            # ... unless the room there is plain (a bare wall)
+    SMOKE_CHANGED = 0.35   # smoke: this share of the spot differs from the room
+    SAT_UP = 8             # smoke adds no colour (a pink shirt does)
+    NEW_FLAME = 0.025      # fire: this share of the spot is flame-coloured now and was not before
+    SMOKE_CONFIRM = 4      # smoke needs more checks than fire ...
+    SMOKE_SPAN = 20.0      # ... over at least this long (s): real smoke keeps coming
+    PEOPLE_AGE = 120.0     # people seen by the main check this recently count
+    SMOKE_ON_PERSON = 0.15 # smoke this much over a person is not trusted
 
     def __init__(self):
         self._lock = threading.Lock()
@@ -218,7 +229,7 @@ class FireWatch:
         except Exception:                              # noqa: BLE001
             return []
         t = latest.get(camera)
-        if not t or time.time() - t["at"] > 10 or not t["size"]:
+        if not t or time.time() - t["at"] > self.PEOPLE_AGE or not t["size"]:
             return []
         w, h = t["size"]
         return [(b[0] / w, b[1] / h, b[2] / w, b[3] / h) for b in t["seen"].people]
@@ -229,8 +240,52 @@ class FireWatch:
             self._today, self._stopped, self._checks = day, {}, 0
         self._stopped[why] = self._stopped.get(why, 0) + 1
 
-    def judge(self, camera, frame, boxes, rules):
-        """The model's boxes that pass checks 1, 2 and 5, and why the rest did not."""
+    def _room(self, frame):
+        return cv2.resize(frame, self.BG_SIZE, interpolation=cv2.INTER_AREA).astype(np.float32)
+
+    @staticmethod
+    def _part(img, box):
+        h, w = img.shape[:2]
+        x1, y1 = int(box[0] * w), int(box[1] * h)
+        x2, y2 = max(x1 + 2, int(np.ceil(box[2] * w))), max(y1 + 2, int(np.ceil(box[3] * h)))
+        return img[y1:y2, x1:x2].astype(np.uint8)
+
+    @staticmethod
+    def _outlines(bgr):
+        g = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
+        return float(np.mean(np.abs(cv2.Sobel(g, cv2.CV_32F, 1, 0)) + np.abs(cv2.Sobel(g, cv2.CV_32F, 0, 1))))
+
+    @staticmethod
+    def _flames(bgr, colour):
+        hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+        h, s, v = hsv[..., 0], hsv[..., 1], hsv[..., 2]
+        if not colour:
+            return v >= 220
+        return (((h <= 35) | (h >= 170)) & (s >= 60) & (v >= 170)) | ((v >= 240) & (s < 60))
+
+    def _veiled(self, room, frame, box):
+        """Smoke lies over the room like a veil: what is behind it gets fainter,
+        much of the spot changes and it adds no colour. Floor glare (there
+        before) and people (more outlines, more colour) fail this."""
+        now, then = self._part(self._room(frame), box), self._part(room, box)
+        if now.size == 0:
+            return False
+        e_now, e_then = self._outlines(now), self._outlines(then)
+        changed = float(np.mean(np.abs(now.astype(np.int16) - then).max(axis=2) > 12))
+        sat = lambda x: float(cv2.cvtColor(x, cv2.COLOR_BGR2HSV)[..., 1].mean())
+        fainter = e_now <= self.VEIL * e_then or (e_then < self.PLAIN and e_now < self.PLAIN * 1.5)
+        return fainter and changed >= self.SMOKE_CHANGED and sat(now) <= sat(then) + self.SAT_UP
+
+    def _new_flame(self, room, frame, box, colour):
+        """Flames that were not there before - an orange bag or a lamp was."""
+        now, then = self._part(self._room(frame), box), self._part(room, box)
+        if now.size == 0:
+            return False
+        return float(np.mean(self._flames(now, colour) & ~self._flames(then, colour))) >= self.NEW_FLAME
+
+    def judge(self, camera, frame, boxes, rules, room=None):
+        """The model's boxes that pass checks 1, 2 and 5, and why the rest did not.
+        With a camera, each spot is also compared with the learnt room."""
         sure_fire, sure_smoke = SURE.get(rules.get("sensitivity"), SURE["medium"])
         small = cv2.resize(frame, (64, 36))
         colour = float(cv2.cvtColor(small, cv2.COLOR_BGR2HSV)[..., 1].mean()) >= 12
@@ -255,12 +310,18 @@ class FireWatch:
             elif kind == "fire" and score < self.ON_PERSON_SURE and \
                     any(_inside(box, p) >= self.ON_PERSON for p in people):
                 reason = "on a person"
-            elif kind == "smoke" and any(_inside(p, box) >= 0.5 or _inside(box, p) >= self.ON_PERSON
+            elif kind == "smoke" and any(_inside(p, box) >= 0.5 or _inside(box, p) >= self.SMOKE_ON_PERSON
                                          for p in people):
                 reason = "on a person"
             elif score < self.VERY_SURE and any(s["kind"] == kind and _iou(box, s["box"]) >= 0.4
                                                  for s in spots):
                 reason = "learnt not fire"
+            elif camera and room is None:
+                reason = "learning the room"
+            elif camera and kind == "smoke" and not self._veiled(room, frame, box):
+                reason = "not like smoke"
+            elif camera and kind == "fire" and not self._new_flame(room, frame, box, colour):
+                reason = "there before"
             if reason:
                 why.append((kind, box, score, reason))
             else:
@@ -283,11 +344,15 @@ class FireWatch:
         # The routine look is at 480 px (this PC is slow); a suspect is looked
         # at in full, 640 px.
         boxes = self._predict(frame, 640 if close else self.ROUTINE_SIZE)
-        keep, why = self.judge(camera, frame, boxes, rules)
+        keep, why = self.judge(camera, frame, boxes, rules, st.get("room"))
         grey = self._grey(frame)
+        room = self._room(frame)
         with self._lock:
             st = self._cams[camera]
             st["checked"], st["boxes"] = ts, keep
+            if not keep:                      # learn the room, slowly - never from a suspect
+                old = st.get("room")
+                st["room"] = room if old is None or old.shape != room.shape                     else old * (1.0 - self.BG_RATE) + room * self.BG_RATE
             self._checks += 1
             for _, _, _, reason in why:
                 if reason != "model not sure":
@@ -301,7 +366,8 @@ class FireWatch:
             found = None
             for kind, box, score in keep:
                 same = [h for h in st["hits"] if h["kind"] == kind and _same_spot(h["box"], box)]
-                if len({h["ts"] for h in same}) < self.CONFIRM:
+                seen = {h["ts"] for h in same}
+                if len(seen) < (self.SMOKE_CONFIRM if kind == "smoke" else self.CONFIRM) or                         (kind == "smoke" and max(seen) - min(seen) < self.SMOKE_SPAN):
                     continue
                 spot = (min(h["box"][0] for h in same), min(h["box"][1] for h in same),
                         max(h["box"][2] for h in same), max(h["box"][3] for h in same))
@@ -442,7 +508,7 @@ class FireWatch:
         with self._lock:
             for cam in status:
                 st = self._cams.setdefault(cam, {"checked": 0.0, "seq": None, "hits": deque(),
-                                                 "hurry_until": 0.0, "incident": None, "boxes": []})
+                                                 "hurry_until": 0.0, "incident": None, "boxes": [], "room": None})
                 if cam in off or status[cam].get("state") == "off":
                     continue
                 gap = self.FOLLOW if st["incident"] else self.HURRY
