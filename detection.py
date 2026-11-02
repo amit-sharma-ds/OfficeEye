@@ -774,19 +774,63 @@ class Smoother:
     - a person missed in a check stays counted until they have been missed
       KEEP_MISSES times in a row *and* for KEEP_SECONDS;
     - a weak first sighting (below CONFIRM_SCORE) only counts once it is seen
-      a second time, so a one-off false box does not either.
+      a second time, so a one-off false box does not either;
+    - from a ceiling an empty office chair or a bag can look like somebody
+      sitting (one was "86% person" for an hour). So every box is shown to a
+      small pose model as well: a person has a head, shoulders, arms - a chair
+      has none of them. A box with no body points is not counted or drawn.
+      It is asked again every VERIFY_EVERY seconds and whenever the box moves,
+      so somebody leaving a chair that still looks like them is let go.
     """
 
     KEEP_MISSES = 2
     KEEP_SECONDS = 4.0
     CONFIRM_SCORE = 0.45
     MATCH_IOU = 0.3
+    POSE_MODEL = "yolo26n-pose.pt"
+    POSE_POINTS = 2         # body points (at POINT_SURE) a real person shows at least
+    POINT_SURE = 0.3
+    VERIFY_EVERY = 60.0     # a counted person is checked again this often (s)
 
     def __init__(self):
         self._lock = threading.Lock()
-        self._people = {}       # camera -> [{"box", "best", "hits", "misses", "last"}]
+        self._people = {}       # camera -> [{"box", "best", "hits", "misses", "last", "person", ...}]
+        self._pose, self._pose_tried = None, 0.0
 
-    def update(self, camera, seen, ts):
+    def _pose_model(self):
+        if self._pose is None and time.time() - self._pose_tried > 300:
+            self._pose_tried = time.time()
+            try:
+                from ultralytics import YOLO
+                path = os.path.join(os.path.dirname(os.path.abspath(__file__)), self.POSE_MODEL)
+                self._pose = YOLO(path if os.path.exists(path) else self.POSE_MODEL)
+            except Exception:                         # noqa: BLE001
+                log.exception("person check: pose model not loaded - counting without it")
+        return self._pose
+
+    def _is_person(self, frame, box):
+        """Does the pose model find a body (head, shoulders, arms...) in the box?
+        Without the pose model everything counts, as before."""
+        pose = self._pose_model()
+        if pose is None or frame is None:
+            return True
+        x1, y1, x2, y2 = box[:4]
+        h, w = frame.shape[:2]
+        px, py = (x2 - x1) * 0.15, (y2 - y1) * 0.15
+        crop = frame[max(0, int(y1 - py)):min(h, int(y2 + py)), max(0, int(x1 - px)):min(w, int(x2 + px))]
+        if crop.size == 0:
+            return True
+        try:
+            r = pose.predict(crop, imgsz=256, conf=0.2, verbose=False)[0]
+        except Exception:                             # noqa: BLE001
+            log.exception("person check failed")
+            return True
+        if r.keypoints is None or r.keypoints.conf is None:
+            return False
+        return any(sum(c >= self.POINT_SURE for c in pts) >= self.POSE_POINTS
+                   for pts in r.keypoints.conf.tolist())
+
+    def update(self, camera, seen, ts, frame=None):
         """Return `seen` with people replaced by everybody who counts now."""
         with self._lock:
             tracks = self._people.setdefault(camera, [])
@@ -817,7 +861,12 @@ class Smoother:
             live = [t for t in tracks if not t["misses"]]
             tracks[:] = live + [t for t in tracks if t["misses"] and
                                 not any(_same_person(t["box"], l["box"]) for l in live)]
-            counted = [t["box"] for t in tracks if self._counts(t)]
+            check = [t for t in live if t.get("person") is None or ts - t["verified"] >= self.VERIFY_EVERY
+                     or _iou(t["box"], t["vbox"]) < 0.5]
+        for t in check:                               # outside the lock: ~50 ms each
+            t["person"], t["verified"], t["vbox"] = self._is_person(frame, t["box"]), ts, t["box"]
+        with self._lock:
+            counted = [t["box"] for t in tracks if self._counts(t) and t.get("person", True)]
         return Seen(counted, seen.phones, seen.vehicles, seen.objects)
 
     def _counts(self, t):
@@ -1150,7 +1199,7 @@ class Pipeline:
             # Counting cameras get a steady number; restricted cameras use every
             # raw sighting - an alert must not wait for a second look.
             if group == config.COUNT:
-                seen = self._smooth.update(cam, seen, fts)
+                seen = self._smooth.update(cam, seen, fts, frame)
             jpg = _thumb(frame)
             with self._lock:
                 tr = self._tracks.get(cam)

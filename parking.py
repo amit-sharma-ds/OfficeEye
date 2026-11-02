@@ -53,6 +53,12 @@ from detection import Detector, _iou, _iso, _label, _overlap, pipeline
 log = logging.getLogger(__name__)
 
 TEAL = (170, 160, 20)          # BGR: the parking colour
+# One colour per vehicle on the live view (BGR), bright on grey tarmac and
+# easy to tell apart: yellow, magenta, cyan, orange, lime, pink, sky, white,
+# red, mint, lilac, peach.
+SHADES = [(0, 230, 255), (255, 60, 255), (255, 230, 0), (0, 140, 255), (60, 255, 120),
+          (180, 120, 255), (255, 170, 60), (240, 240, 240), (60, 60, 255), (200, 255, 160),
+          (255, 160, 200), (130, 190, 255)]
 KINDS = {"car": "car", "truck": "car", "bus": "car", "motorcycle": "bike", "bicycle": "cycle"}
 
 
@@ -389,16 +395,54 @@ class Parking(Detector):
             events.update_meta(t["event"], patch)
 
     def overlay(self, camera, frame):
+        """Each parked vehicle in its own colour with a number on it, and a
+        list in a corner: number, what it is and how long it has stood. Boxes
+        of bikes in a row overlap, so their times are never written on the
+        picture itself, where they would cover each other."""
         now = time.time()
         with self._lock:
             st = self._state.get(camera)
             if not st:
                 return frame
-            parked = [(t["box"], t["kinds"].most_common(1)[0][0], t["first"])
-                      for t in st["tracks"] if t["event"] is not None]
-        for (x1, y1, x2, y2, *_), kind, first in parked:
-            cv2.rectangle(frame, (x1, y1), (x2, y2), TEAL, 2)
-            _label(frame, "{} {}".format(KINDS.get(kind, kind), _short(now - first)), x1, y1, TEAL)
+            parked = sorted(((t["box"], t["kinds"].most_common(1)[0][0], t["first"])
+                             for t in st["tracks"] if t["event"] is not None), key=lambda p: p[2])
+        if not parked:
+            return frame
+        h, w = frame.shape[:2]
+        k = max(0.45, w / 1280.0)                       # text size follows the picture
+        font, scale, thick = cv2.FONT_HERSHEY_SIMPLEX, 0.6 * k, max(1, int(round(1.6 * k)))
+        for i, ((x1, y1, x2, y2, *_), _, _) in enumerate(parked):
+            cv2.rectangle(frame, (x1, y1), (x2, y2), SHADES[i % len(SHADES)], max(2, int(2 * k)))
+        tags = []                                       # numbers, placed where no other number is
+        for i, ((x1, y1, x2, y2, *_), _, _) in enumerate(parked):
+            text = str(i + 1)
+            (tw, th), _ = cv2.getTextSize(text, font, scale, thick)
+            tw, th = tw + int(10 * k), th + int(10 * k)
+            spots = [(x1, y1), (x2 - tw, y1), (x1, y2 - th), (x2 - tw, y2 - th), (x1, y1 - th), (x1, y2)]
+            tx, ty = next(((x, y) for x, y in spots if not any(
+                x < a2 and a1 < x + tw and y < b2 and b1 < y + th for a1, b1, a2, b2 in tags)), spots[0])
+            tx, ty = min(max(0, tx), w - tw), min(max(0, ty), h - th)
+            tags.append((tx, ty, tx + tw, ty + th))
+            cv2.rectangle(frame, (tx, ty), (tx + tw, ty + th), SHADES[i % len(SHADES)], -1)
+            cv2.putText(frame, text, (tx + int(5 * k), ty + th - int(5 * k)), font, scale, (0, 0, 0), thick, cv2.LINE_AA)
+        rows = ["{}  {} - {}".format(i + 1, KINDS.get(kind, kind).capitalize(), _short(now - first))
+                for i, (_, kind, first) in enumerate(parked)]
+        line = int(26 * k)
+        lw = max(cv2.getTextSize(r, font, scale, thick)[0][0] for r in rows) + int(34 * k)
+        lh = line * len(rows) + int(10 * k)
+        # The corner (not top-left: the count is written there) that hides the fewest vehicles.
+        corners = [(w - lw - 6, 6), (6, h - lh - 6), (w - lw - 6, h - lh - 6)]
+        cover = lambda c, b: max(0, min(c[0] + lw, b[2]) - max(c[0], b[0])) *             max(0, min(c[1] + lh, b[3]) - max(c[1], b[1]))
+        lx, ly = min(corners, key=lambda c: sum(cover(c, b) for b, _, _ in parked))
+        shade = frame.copy()
+        cv2.rectangle(shade, (lx, ly), (lx + lw, ly + lh), (25, 25, 25), -1)
+        cv2.addWeighted(shade, 0.75, frame, 0.25, 0, dst=frame)
+        for i, row in enumerate(rows):
+            y = ly + int(6 * k) + line * i
+            cv2.rectangle(frame, (lx + int(8 * k), y + int(5 * k)), (lx + int(22 * k), y + line - int(5 * k)),
+                          SHADES[i % len(SHADES)], -1)
+            cv2.putText(frame, row, (lx + int(28 * k), y + line - int(7 * k)), font, scale,
+                        (255, 255, 255), thick, cv2.LINE_AA)
         return frame
 
     def caption(self, camera):

@@ -86,7 +86,7 @@ def _inside(a, b):
 
 
 class FireWatch:
-    SHARE = 0.3            # most of the detection worker's time spent on fire
+    SHARE = 0.2            # most of the detection worker's time spent on fire
     ROUTINE_SIZE = 480     # picture size for the routine look (640 for a suspect)
     HURRY_SCORE = 0.3      # a weaker guess than this is not looked at again sooner
     MIN_GAP = 0.3          # (s) between two fire checks, however quick
@@ -357,8 +357,12 @@ class FireWatch:
             for _, _, _, reason in why:
                 if reason != "model not sure":
                     self._stop(reason)
-            if keep or any(score >= self.HURRY_SCORE for _, _, score in boxes):
-                st["hurry_until"] = ts + self.WITHIN / 2     # a closer look at 640 px soon
+            # A closer look at 640 px soon - only for something that may still turn
+            # out to be fire, never for a spot already ruled out (a learnt spot, an
+            # ignore area): looking at those every few seconds starved the counting.
+            if keep or any(reason == "model not sure" and score >= self.HURRY_SCORE
+                           for _, _, score, reason in why):
+                st["hurry_until"] = ts + self.WITHIN / 2
             for kind, box, score in keep:
                 st["hits"].append({"ts": ts, "kind": kind, "box": box, "score": score, "grey": grey})
             while st["hits"] and ts - st["hits"][0]["ts"] > self.WITHIN:
@@ -560,8 +564,8 @@ class FireWatch:
                          if s["incident"] and now - s["incident"]["last"] > self.GAP]
                 for s in ended:
                     self._end(s)
-                rest = self._cost * (1.0 / self.SHARE - 1.0)
-                time.sleep(max(self.MIN_GAP, min(rest, 1.0) if hurry else rest))
+                # Fire never takes more than its share, hurried or not.
+                time.sleep(max(self.MIN_GAP, self._cost * (1.0 / self.SHARE - 1.0)))
             except Exception:                          # noqa: BLE001
                 log.exception("fire watch")
                 time.sleep(5)
