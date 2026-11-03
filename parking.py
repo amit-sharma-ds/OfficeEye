@@ -53,6 +53,7 @@ from detection import Detector, _iou, _iso, _label, _overlap, pipeline
 log = logging.getLogger(__name__)
 
 TEAL = (170, 160, 20)          # BGR: the parking colour
+STAMP = 28                     # a photo's time stamp along its bottom (photos.annotate)
 # One colour per vehicle on the live view (BGR), bright on grey tarmac and
 # easy to tell apart: yellow, magenta, cyan, orange, lime, pink, sky, white,
 # red, mint, lilac, peach.
@@ -73,6 +74,53 @@ def _short(sec):
     if sec < 3600:
         return "{} min".format(sec // 60)
     return "{} h {:02d} min".format(sec // 3600, sec % 3600 // 60)
+
+
+def draw_parked(frame, parked, now, notes=None, bottom=0):
+    """Each vehicle in `parked` [(box, kind, first seen)], oldest first, in its
+    own colour with a number on it, and a list in a corner: number, what it
+    is and how long it has stood (or notes[i] instead). Boxes of bikes in a
+    row overlap, so their times are never written on the picture itself,
+    where they would cover each other. The live view and the photos alike;
+    a photo keeps its `bottom` pixels free for its time stamp."""
+    notes = notes or {}
+    h, w = frame.shape[:2]
+    k = max(0.45, w / 1280.0)                       # text size follows the picture
+    font, scale, thick = cv2.FONT_HERSHEY_SIMPLEX, 0.6 * k, max(1, int(round(1.6 * k)))
+    for i, ((x1, y1, x2, y2, *_), _, _) in enumerate(parked):
+        cv2.rectangle(frame, (x1, y1), (x2, y2), SHADES[i % len(SHADES)], max(2, int(2 * k)))
+    tags = []                                       # numbers, placed where no other number is
+    for i, ((x1, y1, x2, y2, *_), _, _) in enumerate(parked):
+        text = str(i + 1)
+        (tw, th), _ = cv2.getTextSize(text, font, scale, thick)
+        tw, th = tw + int(10 * k), th + int(10 * k)
+        spots = [(x1, y1), (x2 - tw, y1), (x1, y2 - th), (x2 - tw, y2 - th), (x1, y1 - th), (x1, y2)]
+        tx, ty = next(((x, y) for x, y in spots if not any(
+            x < a2 and a1 < x + tw and y < b2 and b1 < y + th for a1, b1, a2, b2 in tags)), spots[0])
+        tx, ty = min(max(0, tx), w - tw), min(max(0, ty), h - th)
+        tags.append((tx, ty, tx + tw, ty + th))
+        cv2.rectangle(frame, (tx, ty), (tx + tw, ty + th), SHADES[i % len(SHADES)], -1)
+        cv2.putText(frame, text, (tx + int(5 * k), ty + th - int(5 * k)), font, scale, (0, 0, 0), thick, cv2.LINE_AA)
+    rows = ["{}  {} - {}".format(i + 1, KINDS.get(kind, kind).capitalize(), notes.get(i) or _short(now - first))
+            for i, (_, kind, first) in enumerate(parked)]
+    line = int(26 * k)
+    lw = max(cv2.getTextSize(r, font, scale, thick)[0][0] for r in rows) + int(34 * k)
+    lh = line * len(rows) + int(10 * k)
+    # The corner (not top-left: the count is written there) that hides the fewest vehicles.
+    corners = [(w - lw - 6, 6), (6, h - lh - 6 - bottom), (w - lw - 6, h - lh - 6 - bottom)]
+    cover = lambda c, b: max(0, min(c[0] + lw, b[2]) - max(c[0], b[0])) * \
+        max(0, min(c[1] + lh, b[3]) - max(c[1], b[1]))
+    lx, ly = min(corners, key=lambda c: sum(cover(c, b) for b, _, _ in parked))
+    shade = frame.copy()
+    cv2.rectangle(shade, (lx, ly), (lx + lw, ly + lh), (25, 25, 25), -1)
+    cv2.addWeighted(shade, 0.75, frame, 0.25, 0, dst=frame)
+    for i, row in enumerate(rows):
+        y = ly + int(6 * k) + line * i
+        cv2.rectangle(frame, (lx + int(8 * k), y + int(5 * k)), (lx + int(22 * k), y + line - int(5 * k)),
+                      SHADES[i % len(SHADES)], -1)
+        cv2.putText(frame, row, (lx + int(28 * k), y + line - int(7 * k)), font, scale,
+                    (255, 255, 255), thick, cv2.LINE_AA)
+    return frame
 
 
 class Parking(Detector):
@@ -176,20 +224,29 @@ class Parking(Detector):
 
     def _photo(self, camera, moment, what):
         """The photo of a moment kept earlier: the vehicle marked when it came,
-        the people next to it when they got out, its spot when it went."""
+        the people next to it when they got out, its spot when it went - and
+        every vehicle standing there then marked as on the live view, each in
+        its own colour with its number, what it is and how long it stood."""
         img = cv2.imdecode(np.frombuffer(moment["jpg"], np.uint8), cv2.IMREAD_COLOR)
         if img is None:
             return None
         box, at = moment["box"], self._stamp(moment["at"])
+        me = (box, moment.get("kind", "car"), moment.get("first", moment["at"]))
+        parked = sorted(list(moment.get("parked") or []) + [me], key=lambda p: p[2])
+        i = next(n for n, p in enumerate(parked) if p is me)
+        note = {"came": "just came", "out": "people getting out",
+                "gone": "left after " + _short(moment["at"] - me[2])}.get(what)
+        drawn = draw_parked(img.copy(), parked, moment["at"], {i: note}, bottom=STAMP)
+        shade = SHADES[i % len(SHADES)]
         if what == "came":
-            shot = photos.save(camera, "parking", img, [box], [], colour=TEAL, ts=at)
+            shot = photos.save(camera, "parking", drawn, [box], [], colour=shade, ts=at, clean=img)
         elif what == "out":
-            shot = photos.save(camera, "parking", img, moment["people"], [box], colour=TEAL, ts=at)
+            shot = photos.save(camera, "parking", drawn, moment["people"], [], colour=TEAL, ts=at, clean=img)
         else:
             h, w = img.shape[:2]
             x1, y1, x2, y2 = box[:4]
             spot = [[x1 / w, y1 / h], [x2 / w, y1 / h], [x2 / w, y2 / h], [x1 / w, y2 / h]]
-            shot = photos.save(camera, "parking", img, [], [], zone=spot, colour=TEAL, ts=at)
+            shot = photos.save(camera, "parking", drawn, [], [], zone=spot, colour=shade, ts=at, clean=img)
         if shot:
             shot["what"] = what
         return shot
@@ -326,8 +383,13 @@ class Parking(Detector):
             # The moment is kept (as a jpg, small) - a photo is made of it only
             # if the vehicle turns out to have parked, or to have gone.
             ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), self.SNAP_QUALITY])
+            with self._lock:                        # every vehicle standing there then, for the photo
+                standing = [(t["box"], t["kinds"].most_common(1)[0][0], t["first"], t)
+                            for t in tracks if t["event"] is not None]
             for t, what, *people in snaps:
                 t[what] = {"jpg": buf.tobytes(), "at": ts, "box": t["box"],
+                           "kind": t["kinds"].most_common(1)[0][0], "first": t["first"],
+                           "parked": [p[:3] for p in standing if p[3] is not t],
                            "people": people[0] if people else []} if ok else None
                 if what == "out":
                     outs.append(t)
@@ -395,10 +457,6 @@ class Parking(Detector):
             events.update_meta(t["event"], patch)
 
     def overlay(self, camera, frame):
-        """Each parked vehicle in its own colour with a number on it, and a
-        list in a corner: number, what it is and how long it has stood. Boxes
-        of bikes in a row overlap, so their times are never written on the
-        picture itself, where they would cover each other."""
         now = time.time()
         with self._lock:
             st = self._state.get(camera)
@@ -408,42 +466,7 @@ class Parking(Detector):
                              for t in st["tracks"] if t["event"] is not None), key=lambda p: p[2])
         if not parked:
             return frame
-        h, w = frame.shape[:2]
-        k = max(0.45, w / 1280.0)                       # text size follows the picture
-        font, scale, thick = cv2.FONT_HERSHEY_SIMPLEX, 0.6 * k, max(1, int(round(1.6 * k)))
-        for i, ((x1, y1, x2, y2, *_), _, _) in enumerate(parked):
-            cv2.rectangle(frame, (x1, y1), (x2, y2), SHADES[i % len(SHADES)], max(2, int(2 * k)))
-        tags = []                                       # numbers, placed where no other number is
-        for i, ((x1, y1, x2, y2, *_), _, _) in enumerate(parked):
-            text = str(i + 1)
-            (tw, th), _ = cv2.getTextSize(text, font, scale, thick)
-            tw, th = tw + int(10 * k), th + int(10 * k)
-            spots = [(x1, y1), (x2 - tw, y1), (x1, y2 - th), (x2 - tw, y2 - th), (x1, y1 - th), (x1, y2)]
-            tx, ty = next(((x, y) for x, y in spots if not any(
-                x < a2 and a1 < x + tw and y < b2 and b1 < y + th for a1, b1, a2, b2 in tags)), spots[0])
-            tx, ty = min(max(0, tx), w - tw), min(max(0, ty), h - th)
-            tags.append((tx, ty, tx + tw, ty + th))
-            cv2.rectangle(frame, (tx, ty), (tx + tw, ty + th), SHADES[i % len(SHADES)], -1)
-            cv2.putText(frame, text, (tx + int(5 * k), ty + th - int(5 * k)), font, scale, (0, 0, 0), thick, cv2.LINE_AA)
-        rows = ["{}  {} - {}".format(i + 1, KINDS.get(kind, kind).capitalize(), _short(now - first))
-                for i, (_, kind, first) in enumerate(parked)]
-        line = int(26 * k)
-        lw = max(cv2.getTextSize(r, font, scale, thick)[0][0] for r in rows) + int(34 * k)
-        lh = line * len(rows) + int(10 * k)
-        # The corner (not top-left: the count is written there) that hides the fewest vehicles.
-        corners = [(w - lw - 6, 6), (6, h - lh - 6), (w - lw - 6, h - lh - 6)]
-        cover = lambda c, b: max(0, min(c[0] + lw, b[2]) - max(c[0], b[0])) *             max(0, min(c[1] + lh, b[3]) - max(c[1], b[1]))
-        lx, ly = min(corners, key=lambda c: sum(cover(c, b) for b, _, _ in parked))
-        shade = frame.copy()
-        cv2.rectangle(shade, (lx, ly), (lx + lw, ly + lh), (25, 25, 25), -1)
-        cv2.addWeighted(shade, 0.75, frame, 0.25, 0, dst=frame)
-        for i, row in enumerate(rows):
-            y = ly + int(6 * k) + line * i
-            cv2.rectangle(frame, (lx + int(8 * k), y + int(5 * k)), (lx + int(22 * k), y + line - int(5 * k)),
-                          SHADES[i % len(SHADES)], -1)
-            cv2.putText(frame, row, (lx + int(28 * k), y + line - int(7 * k)), font, scale,
-                        (255, 255, 255), thick, cv2.LINE_AA)
-        return frame
+        return draw_parked(frame, parked, now)
 
     def caption(self, camera):
         n = self.parked(camera)

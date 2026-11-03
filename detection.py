@@ -102,6 +102,12 @@ class Detector:
         looked at again soon, even if the picture barely changes."""
         return False
 
+    def urgent(self, camera):
+        """True while this camera is guarded like a restricted one (the night
+        watch): whenever its picture changes it is looked at before every
+        other counting camera."""
+        return False
+
     def waiting(self, camera):
         """True while something here waits for a second look that the
         routine re-check (every count_refresh seconds) can give - so that
@@ -888,7 +894,8 @@ class Smoother:
 
 class Track:
     """What the pipeline remembers about one camera."""
-    __slots__ = ("seq", "ts", "frame_ts", "small", "seen", "ver", "busy", "waiting", "size", "jpg")
+    __slots__ = ("seq", "ts", "frame_ts", "small", "seen", "ver", "busy", "waiting", "urgent",
+                 "size", "jpg")
 
     def __init__(self):
         self.seq = -1           # frame last looked at
@@ -899,6 +906,7 @@ class Track:
         self.ver = 0            # bumps on every result, for image caches
         self.busy = False
         self.waiting = False    # a detection waits on the routine re-check
+        self.urgent = False     # guarded like a restricted camera (night watch)
         self.size = None        # (width, height) of the picture looked at
         self.jpg = None         # that picture, small - the Search shows it and reads colours off it
 
@@ -1142,7 +1150,9 @@ class Pipeline:
             else:
                 if age < (self.WATCHED_GAP if watched else self.COUNT_GAP):
                     continue
-                rank = 1 if watched else 2
+                # A night-watched camera that changed goes first - after the
+                # restricted ones, before the one watched live.
+                rank = 0.5 if tr.urgent else 1 if watched else 2
 
             small = None
             if forced and not restricted:
@@ -1210,7 +1220,7 @@ class Pipeline:
                 tr.small = small if small is not None else _small(frame)
                 tr.ver += 1
             busy = group == config.COUNT and self._smooth.busy(cam)
-            waiting = False
+            waiting = urgent = False
             for det in self._detectors:
                 if group not in det.groups:
                     continue
@@ -1227,7 +1237,8 @@ class Pipeline:
                                meta=ev.get("meta"))
                 busy = busy or det.busy(cam)
                 waiting = waiting or det.waiting(cam)
-            tr.busy, tr.waiting = busy, waiting
+                urgent = urgent or det.urgent(cam)
+            tr.busy, tr.waiting, tr.urgent = busy, waiting, urgent
 
     # ---------- what the rest of the app reads ----------
 
@@ -1312,6 +1323,20 @@ class Pipeline:
         with self._lock:
             self._jobs.append(job)
         self._wake.set()
+
+    def look_closer(self, image, conf=0.25):
+        """People in a cut-out of a picture, at a lower cutoff than the routine
+        check, each one kept only if the pose model finds a body in it - for a
+        detection that knows where to look (night movement). On the worker
+        thread only (from process()). [(x1, y1, x2, y2, score)] in the cut-out."""
+        vision = self._vision
+        if vision is None:
+            return []
+        r = vision.model.predict(image, imgsz=vision.imgsz, conf=conf, classes=[vision.person],
+                                 device=vision.device, verbose=False)[0]
+        boxes = [(int(a), int(b), int(c), int(d), float(s))
+                 for (a, b, c, d), s in zip(r.boxes.xyxy.tolist(), r.boxes.conf.tolist())]
+        return [b for b in boxes if self._smooth._is_person(image, b)]
 
     def drop_jobs(self):
         with self._lock:

@@ -27,10 +27,11 @@ AMBER = (0, 170, 255)
 GREY = (170, 170, 170)
 
 
-def save(camera, kind, frame, targets, others=(), zone=None, colour=RED, ts=None):
+def save(camera, kind, frame, targets, others=(), zone=None, colour=RED, ts=None, clean=None):
     """Write the photos for one event and return their paths, relative to
     PHOTO_DIR: {"full": ..., "crops": [...], "ts": ...}. `targets` are the
-    people the event is about, `others` everybody else in view."""
+    people the event is about, `others` everybody else in view. The close-ups
+    are cut from `clean` when given - `frame` with nothing drawn on it."""
     ts = ts or datetime.now()
     day = ts.strftime("%Y-%m-%d")
     stem = "{}_{}_{}_{:03d}".format(camera, kind, ts.strftime("%H%M%S"),
@@ -47,7 +48,7 @@ def save(camera, kind, frame, targets, others=(), zone=None, colour=RED, ts=None
     biggest = sorted(targets, key=lambda b: (b[2] - b[0]) * (b[3] - b[1]),
                      reverse=True)[:MAX_CROPS]
     for i, box in enumerate(biggest, 1):
-        crop = _crop(frame, box)
+        crop = _crop(frame if clean is None else clean, box)
         if crop is not None:
             out["crops"].append(_write(folder, day,
                                        "{}_p{}.jpg".format(stem, i), crop))

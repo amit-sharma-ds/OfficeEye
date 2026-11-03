@@ -577,3 +577,14 @@ table.cams tr.fresh td { background: #eef2ff; }
 .f-test { margin-top: 12px; }
 .f-test canvas { max-width: 100%; border-radius: 8px; display: block; margin-bottom: 8px; }
 .f-test ul { margin: 0; padding-left: 18px; font-size: 14px; }
+
+/* ---------------------------------------------------------- night vision */
+.n-hours { display: flex; gap: 4px; align-items: flex-end; overflow-x: auto; padding-top: 4px; }
+.n-hour { flex: 1 0 28px; display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.n-bar { width: 100%; max-width: 34px; height: 90px; display: flex; flex-direction: column-reverse;
+         background: var(--bg, #f3f4f6); border-radius: 5px; overflow: hidden; }
+.n-bar i { display: block; width: 100%; }
+.n-bar i.p { background: var(--red); }
+.n-bar i.o { background: var(--amber); }
+.n-hour span { font-size: 12px; font-weight: 600; min-height: 1em; }
+.n-hour small { font-size: 11px; color: var(--mute); }

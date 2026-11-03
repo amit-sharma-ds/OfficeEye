@@ -4,10 +4,12 @@
 {% block body %}
 <h1>Night vision</h1>
 <p class="sub">After the office has closed, the counting cameras and the washroom-door camera
-   watch for anybody in the building: a <b>person</b> seen by the cameras is recorded with
-   photos. Most cameras switch to infrared (black and white) in the dark; one without
-   infrared sees nothing then. Movement and lights can be recorded too (Rules &amp; timing),
-   but insects at the lens, car lights and the dawn set those off far more often than people.</p>
+   are guarded like a restricted area: a camera whose picture changes is looked at first, and a
+   <b>person</b> is recorded with a photo the moment they are seen. Something moving where no
+   person was seen is looked at again closer. Most cameras switch to infrared (black and white)
+   in the dark; one without infrared sees nothing then - see <b>Cameras now</b>. Movement and
+   lights can be recorded too (Rules &amp; timing); insects lit up at the lens and car lights
+   are left out.</p>
 
 <div class="tabs" role="tablist">
   <button class="on" data-tab="use" role="tab">Night activity</button>
@@ -27,9 +29,10 @@
     </div>
     <div class="rule">
       <label><input type="checkbox" id="r-moves"> Also record movement and lights</label>
-      <p class="hint">Off: only a person seen by the cameras is recorded. On: any movement
-         and lights switched on or off are recorded as well - at night insects flying past
-         the lens, car lights and the dawn set these off, so expect many more photos.</p>
+      <p class="hint">Off: only a person seen by the cameras is recorded. On: movement where
+         no person is found (seen in two checks in a row, bigger than a speck) and lights
+         switched on or off are recorded as well. Glaring white spots - an insect lit up right
+         at the lens, car headlights - and the camera switching to infrared are left out.</p>
     </div>
     <div id="r-move-opts">
     <div class="rule">
@@ -79,6 +82,16 @@
     <div class="stat-n" id="n-moves">-</div>
     <div class="stat-sub" id="n-moves-sub">&nbsp;</div>
   </div>
+</div>
+
+<div class="card" id="n-cams-card" hidden>
+  <div class="card-head"><h2>Cameras now</h2><span class="hint-inline">click one to see its picture</span></div>
+  <div class="f-cams" id="n-cams"></div>
+</div>
+
+<div class="card">
+  <div class="card-head"><h2>Hour by hour</h2><span class="hint-inline" id="n-hours-sub"></span></div>
+  <div class="n-hours" id="n-hours"></div>
 </div>
 
 <div class="card">
@@ -170,6 +183,8 @@ async function load(night) {
   if (!night) day.value = r.night;
   $('#n-span').textContent = `${r.from.replace('T', ' ')} to ${r.to.replace('T', ' ')}`;
   shown = r.events;
+  paintCams(r);
+  paintHours(r);
   const people = shown.filter(e => (e.meta.type || e.label) === 'person');
   const rest = shown.length - people.length;
   $('#n-people').textContent = people.length;
@@ -195,6 +210,74 @@ async function load(night) {
     if (!eventThumb(e)) return;
     openPhotos(eventPhotos(e, names[e.camera] || e.camera), 0);
   });
+}
+
+// ------------------------------------------------------------ cameras now
+const CAM_STATE = {here: ['Somebody here', 's-offline'], moving: ['Movement', 's-stuck'],
+                   dark: ['Too dark to see', 's-off'], watching: ['Watching', 's-ok'],
+                   waiting: ['Watch not on', 's-off'], off: ['Off at night', 's-off'],
+                   none: ['No picture', 's-off']};
+const CAM_NAMES = Object.fromEntries($$('#r-cams label').map(l => [l.querySelector('input').value, l.textContent.trim()]));
+const camName = (id) => names[id] || CAM_NAMES[id] || id;
+const ORDER = ['here', 'moving', 'dark', 'none', 'watching', 'waiting', 'off'];
+
+function camState(id, c, off, on) {
+  if (off.has(id)) return 'off';
+  if (!on) return 'waiting';
+  if (!c || c.checked_ago == null || c.checked_ago > 600) return 'none';
+  if (c.someone) return 'here';
+  if (c.moved_ago != null && c.moved_ago < 120) return 'moving';
+  if (c.bright < 12 && !c.infrared) return 'dark';
+  return 'watching';
+}
+
+function paintCams(r) {
+  if (!r.cameras || !Object.keys(r.cameras).length) return;     // the cloud copy has no cameras
+  $('#n-cams-card').hidden = false;
+  const off = new Set(r.rules.cameras_off || []), on = r.now.state === 'on';
+  const ids = $$('#r-cams input').map(i => i.value);
+  const st = Object.fromEntries(ids.map(id => [id, camState(id, r.cameras[id], off, on)]));
+  $('#n-cams').innerHTML = ids.sort((a, b) => ORDER.indexOf(st[a]) - ORDER.indexOf(st[b])
+                                       || camName(a).localeCompare(camName(b), [], {numeric: true}))
+    .map(id => {
+      const c = r.cameras[id] || {}, [title, cls] = CAM_STATE[st[id]];
+      const sub = st[id] === 'here' ? plural(c.people || 1, 'person')
+        : st[id] === 'dark' ? 'no infrared - sees nothing'
+        : st[id] === 'moving' ? `${dur(c.moved_ago)} ago`
+        : st[id] === 'watching' ? (c.infrared ? 'infrared' : 'colour') + ` · checked ${dur(Math.round(c.checked_ago))} ago`
+        : '';
+      return `<button class="f-cam ${st[id] === 'here' ? 'fire' : st[id] === 'moving' ? 'checking' : ''}" data-cam="${esc(id)}">` +
+        `<b>${esc(camName(id))}</b><span class="h-chip ${cls}">${esc(title)}</span><small>${esc(sub)}</small></button>`;
+    }).join('');
+  $$('#n-cams .f-cam').forEach(b => b.onclick = () => openPhotos([{
+    src: `/frame/${encodeURIComponent(b.dataset.cam)}.jpg?w=1280&t=${Date.now()}`,
+    caption: `${camName(b.dataset.cam)} - now`}], 0));
+}
+
+// ------------------------------------------------------------ hour by hour
+function paintHours(r) {
+  const start = new Date(r.from), end = new Date(r.to), hours = [];
+  for (let t = new Date(start); t < end && hours.length < 24; t = new Date(t.getTime() + 3600000)) {
+    t.setMinutes(0, 0, 0);
+    hours.push({at: t.getTime(), people: 0, other: 0});
+  }
+  shown.forEach(e => {
+    const t = new Date((e.meta || {}).started || e.ts).getTime();
+    const h = hours.find(x => t >= x.at && t < x.at + 3600000);
+    if (h) ((e.meta.type || e.label) === 'person' ? h.people++ : h.other++);
+  });
+  const top = Math.max(1, ...hours.map(h => h.people + h.other));
+  const busiest = hours.reduce((a, h) => h.people + h.other > a.people + a.other ? h : a, hours[0] || {people: 0, other: 0});
+  $('#n-hours-sub').textContent = busiest && busiest.people + busiest.other
+    ? `busiest ${String(new Date(busiest.at).getHours()).padStart(2, '0')}:00` : 'nothing recorded';
+  $('#n-hours').innerHTML = hours.map(h => {
+    const hh = String(new Date(h.at).getHours()).padStart(2, '0');
+    return `<div class="n-hour" title="${hh}:00 - ${plural(h.people, 'person')}, ${h.other} other">` +
+      `<div class="n-bar">` +
+      (h.other ? `<i class="o" style="height:${h.other / top * 100}%"></i>` : '') +
+      (h.people ? `<i class="p" style="height:${h.people / top * 100}%"></i>` : '') +
+      `</div><span>${h.people + h.other || ''}</span><small>${hh}</small></div>`;
+  }).join('');
 }
 
 let loadedAt = Date.now();

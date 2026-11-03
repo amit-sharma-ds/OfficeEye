@@ -700,7 +700,8 @@ def api_night():
     rows = events.between(["night_activity"], label, (first + timedelta(days=2)).strftime("%Y-%m-%d"),
                           camera=request.args.get("camera") or None, limit=5000)
     rows = [r for r in rows if night_of_row(r) == label]
-    return jsonify({"night": label, "from": frm, "to": to, "events": rows, **_night_rules_out()})
+    return jsonify({"night": label, "from": frm, "to": to, "events": rows,
+                    "cameras": night.detector.cameras(), **_night_rules_out()})
 
 
 @app.get("/api/search")
