@@ -11,6 +11,17 @@ and objects (Search) are learnt along with people, not forgotten.
     py -3.12 tools/train_people.py                    label, then train at --train-at
     py -3.12 tools/train_people.py --label-only
     py -3.12 tools/train_people.py --wait-collect "2026-11-02 19:35" --hours 7
+    py -3.12 tools/train_people.py --student yolo26s-office.pt --hours 6
+
+Things the teacher cannot see either (a truck from straight above at night,
+behind a lit railing) are boxed by hand in data/train/manual.json:
+
+    {"cam24_truck_": {"boxes": [[7, cx, cy, w, h]], "copies": 4}}
+
+Every picture whose name starts with the key gets those boxes (class, then
+centre and size, 0-1) on top of the teacher's, and is put into training
+`copies` more times, so a handful of pictures weigh enough. The report then
+says how many of the hand-boxed things the old and the new model find.
 
 Everything lands in data/train/people/: images + labels (the dataset), runs/
 (training), report.json (old model against new, on pictures kept out of
@@ -34,6 +45,7 @@ OUT = os.path.join(ROOT, "data", "train", "people")
 TEACHER = os.path.join(ROOT, "yolo26l.pt")
 STUDENT = os.path.join(ROOT, "yolo26s.pt")
 POSE = os.path.join(ROOT, "yolo26n-pose.pt")
+MANUAL = os.path.join(ROOT, "data", "train", "manual.json")
 PERSON_SURE = 0.6          # a teacher person this sure needs no pose check
 PERSON_MIN = 0.25          # ... down to this with a body the pose model sees
 OTHER_MIN = 0.35           # every other kind of object
@@ -66,10 +78,23 @@ def body(pose, img, box):
     return any(sum(c >= 0.3 for c in pts) >= 2 for pts in r.keypoints.conf.tolist())
 
 
+def manual():
+    """{name prefix: {"boxes": [[class, cx, cy, w, h]], "copies": n}} - see the top."""
+    if not os.path.exists(MANUAL):
+        return {}
+    with open(MANUAL, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def by_hand(name, marks):
+    return next((m for p, m in marks.items() if name.startswith(p)), None)
+
+
 def label(teacher, pose):
     import cv2
     for sub in ("images/train", "images/val", "labels/train", "labels/val"):
         os.makedirs(os.path.join(OUT, sub), exist_ok=True)
+    marks = manual()
     todo = [f for f in sorted(glob.glob(os.path.join(FRAMES, "*.jpg")))
             if not os.path.exists(os.path.join(OUT, "labels", "val" if is_val(os.path.basename(f)) else "train",
                                                os.path.basename(f)[:-4] + ".txt"))]
@@ -92,9 +117,15 @@ def label(teacher, pose):
                 continue
             rows.append("{} {:.6f} {:.6f} {:.6f} {:.6f}".format(
                 c, (x1 + x2) / 2 / w, (y1 + y2) / 2 / h, (x2 - x1) / w, (y2 - y1) / h))
-        shutil.copy2(f, os.path.join(OUT, "images", part, name))
-        with open(os.path.join(OUT, "labels", part, name[:-4] + ".txt"), "w") as fh:
-            fh.write("\n".join(rows))
+        hand = by_hand(name, marks)
+        if hand:
+            rows += ["{} {:.6f} {:.6f} {:.6f} {:.6f}".format(int(c), *b) for c, *b in hand["boxes"]]
+        copies = [""] + (["_c{}".format(k) for k in range(1, int(hand.get("copies", 0)) + 1)]
+                         if hand and part == "train" else [])
+        for tail in copies:
+            shutil.copy2(f, os.path.join(OUT, "images", part, name[:-4] + tail + ".jpg"))
+            with open(os.path.join(OUT, "labels", part, name[:-4] + tail + ".txt"), "w") as fh:
+                fh.write("\n".join(rows))
         if i % 20 == 0:
             each = (time.time() - t0) / i
             say("{}/{}  {:.1f} s a picture, {:.0f} min left".format(i, len(todo), each, each * (len(todo) - i) / 60))
@@ -154,6 +185,23 @@ def compare(old, new):
             err += abs(len(boxes) - len(want))
         report[key] = {"found": found, "missed": report["people"] - found, "extra": extra,
                        "count_off_per_picture": round(err / max(1, len(files)), 3)}
+    # The hand-boxed things, at the app's vehicle cutoff (detection.Vision.VEHICLE_CONF).
+    marks = manual()
+    hand = [(f, by_hand(os.path.basename(f), marks)) for f in files]
+    hand = [(f, m) for f, m in hand if m]
+    if hand:
+        report["by_hand"] = {"pictures": len(hand), "boxes": sum(len(m["boxes"]) for _, m in hand)}
+        for key, model in (("old", old), ("new", new)):
+            found = 0
+            for f, m in hand:
+                img = cv2.imread(f)
+                h, w = img.shape[:2]
+                r = model.predict(img, imgsz=480, conf=0.25, verbose=False)[0]
+                got = [(b, int(c)) for b, c in zip(r.boxes.xyxy.tolist(), r.boxes.cls.tolist())]
+                for c, cx, cy, bw, bh in m["boxes"]:
+                    want = ((cx - bw / 2) * w, (cy - bh / 2) * h, (cx + bw / 2) * w, (cy + bh / 2) * h)
+                    found += any(k == int(c) and iou(b, want) >= 0.4 for b, k in got)
+            report["by_hand"][key + "_found"] = found
     return report
 
 
@@ -162,6 +210,7 @@ def main():
     ap.add_argument("--wait-collect", default="", help='label the frames collected until then too, "YYYY-mm-dd HH:MM"')
     ap.add_argument("--hours", type=float, default=7.0, help="training time")
     ap.add_argument("--label-only", action="store_true")
+    ap.add_argument("--student", default=STUDENT, help="the model trained further (and compared against)")
     a = ap.parse_args()
     idle()
     import torch
@@ -177,15 +226,17 @@ def main():
     if a.label_only:
         return
     del teacher
-    say("training yolo26s for {} h".format(a.hours))
-    model = YOLO(STUDENT)
+    student = a.student if os.path.isabs(a.student) else os.path.join(ROOT, a.student)
+    say("training {} for {} h".format(os.path.basename(student), a.hours))
+    model = YOLO(student)
+    run = "office-" + datetime.now().strftime("%Y%m%d")       # last night's run is kept
     model.train(data=dataset(model.names), imgsz=480, time=a.hours, epochs=100, batch=8, workers=0,
                 device="cpu", freeze=10, lr0=0.002, lrf=0.2, warmup_epochs=1, patience=50,
-                project=os.path.join(OUT, "runs"), name="office", exist_ok=True, plots=False, amp=False,
+                project=os.path.join(OUT, "runs"), name=run, exist_ok=True, plots=False, amp=False,
                 verbose=False)
-    best = os.path.join(OUT, "runs", "office", "weights", "best.pt")
+    best = os.path.join(OUT, "runs", run, "weights", "best.pt")
     say("checking old against new")
-    report = dict(compare(YOLO(STUDENT), YOLO(best)), best=best, at=datetime.now().isoformat(timespec="seconds"))
+    report = dict(compare(YOLO(student), YOLO(best)), best=best, at=datetime.now().isoformat(timespec="seconds"))
     with open(os.path.join(OUT, "report.json"), "w", encoding="utf-8") as f:
         json.dump(report, f, indent=1)
     say(json.dumps(report))
