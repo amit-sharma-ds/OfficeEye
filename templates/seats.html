@@ -3,14 +3,64 @@
 
 {% block body %}
 <h1>Monitoring agent</h1>
-<p class="sub">Every seat you mark: who sat there, from when to when, and for how long - with a
-   photo and a short clip of each arrival, so the history of every seat can be looked back at.
-   It runs on the checks the cameras already get - no extra load.</p>
+<p class="sub">Every seat on the cameras you switch on: who sat there, from when to when, and for
+   how long - with a photo and a short clip of each arrival, so the history of every seat can be
+   looked back at. Seats find themselves: where somebody stays put for a minute or two becomes a
+   seat. It runs on the checks the cameras already get - no extra model time.</p>
 <p class="hint privacy">Nobody is recognised by face: who sat is what the photo and the clip show
    (the colour of the clothes helps to tell one sitting from the next). Tell the staff that the
    seats are watched. Clips are kept on the office PC with the photos.</p>
 
 {% if cameras %}
+<div class="tabs" role="tablist">
+  <button class="on" data-tab="seats" role="tab">Seats &amp; history</button>
+  <button data-tab="settings" role="tab">Settings</button>
+  <button data-tab="draw" role="tab">Draw seats</button>
+</div>
+
+<section data-pane="settings" hidden>
+  <div class="card">
+    <div class="card-head"><h2>Cameras watched</h2><span class="hint-inline" id="r-count"></span></div>
+    <div class="rule">
+      <div class="row">
+        <button class="ghost sm" id="r-all">All on</button>
+        <button class="ghost sm" id="r-none">All off</button>
+      </div>
+      <div class="cam-checks" id="r-cams">
+        {% for cam in cameras %}<label><input type="checkbox" value="{{ cam.id }}"> {{ cam.name }}
+          <small class="muted" data-seats="{{ cam.id }}"></small></label>{% endfor %}
+      </div>
+      <p class="hint">Tick a camera to watch its seats; untick it to stop (a sitting going on there
+         ends, the history stays). A camera that is on finds its seats by itself.</p>
+    </div>
+    <div class="rule">
+      <label><input type="checkbox" id="r-auto"> Find the seats by themselves</label>
+      <p class="hint">A place where somebody stays put for about a minute and a half becomes a seat
+         ("Seat 4" - rename or move it under <b>Draw seats</b>). Off: only the seats drawn by hand.</p>
+    </div>
+    <div class="rule">
+      <label for="r-sit">Sitting after</label>
+      <div><input type="number" id="r-sit" min="5" max="600" step="5"> seconds at a seat</div>
+      <p class="hint">Shorter than this is somebody walking past or stopping for a word - not written down.</p>
+    </div>
+    <div class="rule">
+      <label for="r-gone">Gone after</label>
+      <div><input type="number" id="r-gone" min="15" max="1800" step="15"> seconds of the seat seen empty</div>
+      <p class="hint">A person hidden for a moment (bending down, behind a colleague) is not counted as leaving.</p>
+    </div>
+    <div class="rule">
+      <label><input type="checkbox" id="r-clips"> Short clip of every arrival</label>
+      <div><input type="number" id="r-clip-s" min="4" max="30" step="1"> seconds long</div>
+      <p class="hint">About 100 KB a clip; cleared with the photos after the days set in Settings.</p>
+    </div>
+    <div class="row end">
+      <span class="status" id="r-status"></span>
+      <button class="primary" id="r-save">Save settings</button>
+    </div>
+  </div>
+</section>
+
+<section data-pane="seats">
 <div class="stats four">
   <div class="stat"><div class="stat-k">Seats watched</div><div class="stat-n" id="k-seats">-</div>
     <div class="stat-sub" id="k-cams">&nbsp;</div></div>
@@ -23,7 +73,11 @@
 </div>
 
 <div class="card">
-  <div class="card-head"><h2>Seats now</h2><span class="hint-inline" id="now-hint"></span></div>
+  <div class="card-head">
+    <h2>Seats now</h2>
+    <span class="hint-inline" id="now-hint"></span>
+    <select id="f-cam" class="date"><option value="">All cameras</option></select>
+  </div>
   <div class="h-grid seat-grid" id="grid"><p class="empty">Loading&hellip;</p></div>
 </div>
 
@@ -43,18 +97,21 @@
     </table>
   </div>
 </div>
+</section>
 
+<section data-pane="draw" hidden>
 <div class="card">
   <div class="card-head">
-    <h2>Set up seats</h2>
+    <h2>Draw seats</h2>
     <select id="cam" class="date">
       {% for cam in cameras %}<option value="{{ cam.id }}">{{ cam.name }}</option>{% endfor %}
     </select>
   </div>
-  <p class="hint">Drag a box over each seat - the chair and where a person sitting on it shows
-     (head and shoulders too). Drag a box to move it, its bottom-right corner to resize it.
-     <b>Suggest</b> puts a box on every chair and person this camera sees now - keep the right
-     ones, delete the rest, give them names (a desk number or whose seat it is), then <b>Save</b>.</p>
+  <p class="hint">Not needed on a camera that is on - its seats find themselves. Here they can be
+     named (a desk number or whose seat it is), moved, deleted, or drawn by hand: drag a box over
+     a seat - the chair and where a person sitting on it shows (head and shoulders too). Drag a box
+     to move it, its bottom-right corner to resize it. <b>Suggest</b> puts a box on every chair and
+     person this camera sees now. Then <b>Save</b> - saving also switches the camera on.</p>
   <div class="seat-setup">
     <div class="zone-wrap"><img id="s-img" alt=""><canvas id="s-canvas"></canvas></div>
     <div class="seat-list" id="s-list"></div>
@@ -66,6 +123,7 @@
     <button class="primary" id="s-save">Save seats</button>
   </div>
 </div>
+</section>
 {% else %}
 <div class="card">
   <p class="empty">No counting camera yet. Add the cameras that see the desks on the
@@ -100,14 +158,53 @@ const hm = (iso) => (iso || '').slice(11, 16);
 const dur = (s) => s == null ? '' : s < 60 ? `${s} s` : s < 3600 ? `${Math.round(s / 60)} min`
   : `${Math.floor(s / 3600)} h ${String(Math.round(s % 3600 / 60)).padStart(2, '0')} min`;
 const secs = (iso) => new Date(iso).getTime() / 1000;
-let seatsCfg = {}, now = {}, todayRows = [], dayRows = [];
+let seatsCfg = {}, now = {}, todayRows = [], dayRows = [], rules = {cameras: []}, learning = {};
+const isOn = (cam) => (rules.cameras || []).includes(cam);
 
-// Every seat of every counting camera, in camera order: {cam, id, name, box}.
-function allSeats() {
+// Every seat, in camera order: {cam, id, name, box} - of the cameras that
+// are on, or (all) of every camera, for the history.
+function allSeats(all) {
   const out = [];
-  CAMS.forEach(cam => (seatsCfg[cam] || []).forEach(s => out.push(Object.assign({cam}, s))));
+  CAMS.filter(cam => all || isOn(cam)).forEach(cam =>
+    (seatsCfg[cam] || []).forEach(s => out.push(Object.assign({cam}, s))));
   return out;
 }
+
+// ------------------------------------------------------------ tabs
+function showTab(name) {
+  $$('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === name));
+  $$('[data-pane]').forEach(p => p.hidden = p.dataset.pane !== name);
+  if (name === 'draw') { fit(); draw(); }
+}
+$$('.tabs button').forEach(b => b.onclick = () => showTab(b.dataset.tab));
+
+// ------------------------------------------------------------ settings
+let rulesShown = false;
+function paintRules(force) {
+  $$('#r-cams [data-seats]').forEach(el => {
+    const n = (seatsCfg[el.dataset.seats] || []).length, l = learning[el.dataset.seats];
+    el.textContent = n ? `${plural(n, 'seat')}` : isOn(el.dataset.seats) ? (l ? 'finding seats' : 'no seats yet') : '';
+  });
+  $('#r-count').textContent = `${(rules.cameras || []).length} of ${CAMS.length} on`;
+  if (rulesShown && !force) return;            // not while somebody changes them
+  rulesShown = true;
+  $$('#r-cams input').forEach(i => i.checked = isOn(i.value));
+  $('#r-auto').checked = !!rules.auto_seats;
+  $('#r-sit').value = rules.sit_after;
+  $('#r-gone').value = rules.gone_after;
+  $('#r-clips').checked = !!rules.clips;
+  $('#r-clip-s').value = rules.clip_seconds;
+}
+$('#r-all').onclick = () => $$('#r-cams input').forEach(i => i.checked = true);
+$('#r-none').onclick = () => $$('#r-cams input').forEach(i => i.checked = false);
+$('#r-save').onclick = async () => {
+  const r = await post('/api/seats/rules', {
+    cameras: $$('#r-cams input').filter(i => i.checked).map(i => i.value),
+    auto_seats: $('#r-auto').checked, sit_after: +$('#r-sit').value, gone_after: +$('#r-gone').value,
+    clips: $('#r-clips').checked, clip_seconds: +$('#r-clip-s').value});
+  $('#r-status').textContent = r.message || '';
+  if (r.ok) { rules = r.rules; paintRules(true); loadNow().catch(() => {}); }
+};
 const live = (s) => (now[s.cam] || {})[s.id];
 const ofSeat = (rows, s) => rows.filter(r => r.camera === s.cam && r.meta.seat === s.id);
 // How long a sitting lasted (or has lasted so far), clipped to one day.
@@ -124,29 +221,47 @@ function spanOf(ev, day) {
 async function loadNow() {
   const r = await api('/api/seats');
   seatsCfg = r.seats || {}; now = r.now || {}; todayRows = r.sittings || [];
+  rules = r.rules || rules; learning = r.learning || {};
   if (day.value === r.day) { dayRows = todayRows; paintDay(); }
+  paintRules();
   paintNow(r.day);
 }
 
 function paintNow(today) {
-  const seats = allSeats();
-  const taken = seats.filter(s => (live(s) || {}).state === 'sitting').length;
-  const coming = seats.filter(s => (live(s) || {}).state === 'pending').length;
+  const on = CAMS.filter(isOn), every = allSeats();
+  const opts = '<option value="">All cameras</option>' + on.map(c =>
+    `<option value="${esc(c)}">${esc(camName(c))}</option>`).join('');
+  const pick = $('#f-cam').value;
+  if ($('#f-cam').dataset.opts !== opts) {
+    $('#f-cam').innerHTML = opts; $('#f-cam').dataset.opts = opts;
+    $('#f-cam').value = on.includes(pick) ? pick : '';
+  }
+  const one = $('#f-cam').value;
+  const seats = every.filter(s => !one || s.cam === one);
+  const taken = every.filter(s => (live(s) || {}).state === 'sitting').length;
+  const coming = every.filter(s => (live(s) || {}).state === 'pending').length;
   const total = todayRows.reduce((t, ev) => t + spanOf(ev, today).secs, 0);
-  $('#k-seats').textContent = seats.length;
-  $('#k-cams').textContent = seats.length ? `on ${plural(new Set(seats.map(s => s.cam)).size, 'camera')}` : 'mark them below';
+  $('#k-seats').textContent = every.length;
+  $('#k-cams').textContent = on.length ? `on ${plural(on.length, 'camera')} switched on` : 'switch cameras on in Settings';
   $('#k-now').textContent = taken;
-  $('#k-coming').textContent = coming ? `${coming} just arriving` : (seats.length ? `${seats.length - taken} empty` : ' ');
+  $('#k-coming').textContent = coming ? `${coming} just arriving` : (every.length ? `${every.length - taken} empty` : ' ');
   $('#k-sits').textContent = todayRows.length;
   $('#k-time').textContent = total ? dur(total) : '0';
   $('#now-hint').textContent = seats.length ? 'click a seat for its history' : '';
 
+  // A camera that is on but has no seat yet: say that they are being found.
+  const finding = on.filter(c => (!one || c === one) && !(seatsCfg[c] || []).length).map(c =>
+    `<div class="h-card s-empty seat-finding"><div class="h-body"><b>${esc(camName(c))}</b>
+      <span class="h-text">Finding the seats - one is added where somebody stays put for about a
+        minute and a half${learning[c] ? ` (${plural(learning[c], 'place')} being watched now)` : ''}.</span>
+      <span class="h-since">Or draw them under <b>Draw seats</b>.</span></div></div>`).join('');
   const grid = $('#grid');
   if (!seats.length) {
-    grid.innerHTML = '<p class="empty">No seats marked yet - mark them in <b>Set up seats</b> below.</p>';
+    grid.innerHTML = finding || (on.length ? '<p class="empty">No seats on this camera yet.</p>'
+      : '<p class="empty">No camera is switched on - tick the cameras to watch under <b>Settings</b>.</p>');
     return;
   }
-  grid.innerHTML = seats.map((s, i) => {
+  grid.innerHTML = finding + seats.map((s, i) => {
     const st = live(s) || {}, rows = ofSeat(todayRows, s);
     const time = rows.reduce((t, ev) => t + spanOf(ev, today).secs, 0);
     const last = rows[0];
@@ -170,7 +285,7 @@ function paintNow(today) {
     const s = seats[+p.closest('.h-card').dataset.i];
     openLive(s.cam, camName(s.cam));
   });
-  $$('#grid .h-card').forEach(c => c.onclick = (e) => {
+  $$('#grid .h-card[data-i]').forEach(c => c.onclick = (e) => {
     if (e.target.closest('.h-pic, button, img')) return;
     const s = seats[+c.dataset.i];
     $('#f-seat').value = s.cam + '|' + s.id;
@@ -222,7 +337,9 @@ async function loadDay() {
 }
 
 function paintDay() {
-  const seats = allSeats(), pick = $('#f-seat').value;
+  // Every seat with a sitting this day, on cameras switched off since too.
+  const seats = allSeats(true).filter(s => isOn(s.cam) || dayRows.some(r => r.camera === s.cam && r.meta.seat === s.id));
+  const pick = $('#f-seat').value;
   const opts = '<option value="">All seats</option>' + seats.map(s =>
     `<option value="${esc(s.cam + '|' + s.id)}">${esc(s.name)} (${esc(camName(s.cam))})</option>`).join('');
   if ($('#f-seat').innerHTML !== opts) { $('#f-seat').innerHTML = opts; $('#f-seat').value = pick; }
@@ -388,7 +505,7 @@ $('#s-save').onclick = async () => {
     seatsCfg[edit.cam] = r.seats;
     edit.dirty = false;
     loadEditor(edit.cam);
-    loadNow().catch(() => {});
+    loadNow().then(() => paintRules(true)).catch(() => {});
   }
 };
 $('#cam').onchange = () => {
@@ -401,8 +518,12 @@ $('#cam').onchange = () => {
 day.value = today(); day.max = today();
 day.onchange = () => loadDay().catch(() => {});
 $('#f-seat').onchange = () => paintDay();
-edit.cam = $('#cam').value;
-loadNow().then(() => loadEditor(edit.cam)).catch(() => {});
+$('#f-cam').onchange = () => loadNow().catch(() => {});
+loadNow().then(() => {
+  const first = CAMS.find(isOn);                // the editor opens on a camera that is on
+  if (first) $('#cam').value = first;
+  loadEditor($('#cam').value);
+}).catch(() => {});
 setInterval(() => loadNow().catch(() => {}), 10000);
 })();
 </script>

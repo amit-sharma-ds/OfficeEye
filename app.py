@@ -771,7 +771,16 @@ def api_seats():
     rows = [r for r in events.between([seats.KIND], prev, nxt, limit=5000)
             if r["day"] == day or (r["meta"].get("end") or r["meta"].get("last") or "") >= day]
     return jsonify({"day": day, "seats": config.get(seats.SECTION), "now": seats.detector.now(),
-                    "sittings": rows})
+                    "rules": seats.rules(), "learning": seats.detector.learning(), "sittings": rows})
+
+
+@app.post("/api/seats/rules")
+def api_seats_rules():
+    """The Monitoring agent's Settings tab: cameras on or off, the timings."""
+    body = request.get_json(silent=True) or {}
+    patch = seats.clean_rules(body, [c["id"] for c in config.cameras(config.COUNT)])
+    config.update(seats.RULES, patch)
+    return jsonify({"ok": True, "rules": seats.rules(), "message": "Settings saved"})
 
 
 @app.post("/api/seats/<cam_id>")
@@ -781,6 +790,9 @@ def api_seats_save(cam_id):
     body = request.get_json(silent=True) or {}
     kept = seats.clean_seats(body.get("seats"))
     config.update(seats.SECTION, {cam_id: kept})
+    on = seats.rules()["cameras"]
+    if kept and cam_id not in on:                   # seats drawn: the camera is watched
+        config.update(seats.RULES, {"cameras": on + [cam_id]})
     return jsonify({"ok": True, "seats": kept,
                     "message": "Saved: {} seat{}".format(len(kept), "" if len(kept) == 1 else "s")})
 

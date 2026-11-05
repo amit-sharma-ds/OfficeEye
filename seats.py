@@ -2,19 +2,22 @@
 when to when, with a photo and a short clip of every arrival - so each
 seat's history can be looked back at.
 
-Seats are drawn once per camera on that page: a box around the chair and
-where a person sitting on it shows. Then, after every model check of a
-counting camera (no extra model time):
+Cameras are switched on and off for it in the page's Settings tab. On a
+camera that is on, the seats find themselves: a place where somebody stays
+put for LEARN_AFTER seconds becomes a seat ("Seat 4", renamed or moved on
+the page if wanted). Seats can be drawn by hand too: a box around the chair
+and where a person sitting on it shows. Then, after every model check of a
+camera that is on (no extra model time):
 
 1. Each person goes to the seat that holds the most of them (or that they
    cover most of) - one person a seat.
-2. Somebody at a seat for SIT_CONFIRM seconds is a sitting. From the first
+2. Somebody at a seat for "sit_after" seconds is a sitting. From the first
    sighting that camera decodes every frame for a few seconds and a clip of
-   about CLIP_SECONDS is written: the seat and around it, as H.264 MP4 that
+   a few seconds is written: the seat and around it, as H.264 MP4 that
    any browser plays. Somebody only walking past is dropped, clip and all.
 3. The sitting is written down once it is sure: when it began, a photo of
    the person (and a close-up), the clip and the colour of their clothes.
-   It ends when the seat has been seen empty for LEAVE_AFTER seconds, with
+   It ends when the seat has been seen empty for "gone_after" seconds, with
    a photo of the last look at them.
 
 Nobody is recognised - there is no face recognition in this app. Who sat is
@@ -51,8 +54,45 @@ TEAL = (160, 140, 20)           # BGR
 EMPTY, PENDING, SITTING = "empty", "pending", "sitting"
 
 
+RULES = "seat_rules"            # config: the page's Settings tab
+DEFAULT_RULES = {
+    "cameras": None,            # the cameras watched; None: those with seats
+    "sit_after": 20,            # at a seat this many seconds: sitting, not walking past
+    "gone_after": 60,           # seen empty this long: gone (a missed look or two is not leaving)
+    "auto_seats": True,         # a seat is added where somebody stays put, none drawn needed
+    "clips": True,
+    "clip_seconds": 10,
+}
+LIMITS = {"sit_after": (5, 600), "gone_after": (15, 1800), "clip_seconds": (4, 30)}
+
+
 def seats_of(camera):
     return list(config.get(SECTION).get(camera) or [])
+
+
+def rules():
+    r = dict(DEFAULT_RULES, **config.get(RULES))
+    if r["cameras"] is None:
+        r["cameras"] = [cam for cam, items in config.get(SECTION).items() if items]
+    return r
+
+
+def clean_rules(body, cameras):
+    """The Settings tab's answer, checked: known counting cameras only,
+    numbers within their limits."""
+    out = {}
+    if isinstance(body.get("cameras"), list):
+        out["cameras"] = [c for c in dict.fromkeys(str(c) for c in body["cameras"]) if c in cameras]
+    for key, (lo, hi) in LIMITS.items():
+        if key in body:
+            try:
+                out[key] = int(min(max(float(body[key]), lo), hi))
+            except (TypeError, ValueError):
+                pass
+    for key in ("auto_seats", "clips"):
+        if key in body:
+            out[key] = bool(body[key])
+    return out
 
 
 def clean_seats(items):
@@ -92,6 +132,12 @@ def _px(box, w, h):
 
 def _area(b):
     return max(0.0, b[2] - b[0]) * max(0.0, b[3] - b[1])
+
+
+def _iou(a, b):
+    inter = _inter(a, b)
+    union = _area(a) + _area(b) - inter
+    return inter / union if union > 0 else 0.0
 
 
 def _inter(a, b):
@@ -146,7 +192,7 @@ class Clip:
     to the seat and around it. Written to a temporary name and renamed when
     done, so a page never gets half a file."""
 
-    def __init__(self, camera, seat, size, started):
+    def __init__(self, camera, seat, size, started, seconds):
         self.camera, self.seat_id = camera, seat["id"]
         w, h = size
         x1, y1, x2, y2 = _px(seat["box"], w, h)
@@ -162,7 +208,7 @@ class Clip:
         self.name = "{}_seat-{}_{}_{:03d}.mp4".format(camera, self.seat_id, ts.strftime("%H%M%S"),
                                                      ts.microsecond // 1000)
         self.path = os.path.join(photos.PHOTO_DIR, self.day, self.name)
-        self.started, self.until = started, started + Recorder.SECONDS
+        self.started, self.until = started, started + seconds
         self.out = self.stream = None
         self.seq, self.frames, self.t0 = -1, 0, None
         self.done = False
@@ -234,7 +280,6 @@ class Recorder:
     decodes every frame (as a restricted one does), without being checked
     any more often; a few frames a second go into the clip."""
 
-    SECONDS = 10.0              # each clip
     EVERY = 0.2                 # a frame this often (5 a second)
     WIDTH = 480                 # clips at most this wide
 
@@ -244,8 +289,8 @@ class Recorder:
         self._wake = threading.Event()
         threading.Thread(target=self._run, name="seat-clips", daemon=True).start()
 
-    def start(self, camera, seat, size, ts):
-        clip = Clip(camera, seat, size, ts)
+    def start(self, camera, seat, size, ts, seconds):
+        clip = Clip(camera, seat, size, ts, seconds)
         stream = manager.get(camera)
         if stream is None:
             return None
@@ -311,14 +356,16 @@ class SeatMonitor(Detector):
     title = "Seat monitor"
     groups = (config.COUNT,)
 
-    SIT_CONFIRM = 20.0          # at a seat this long: sitting, not walking past
     PENDING_DROP = 15.0         # not seen again this soon: only walked past
-    LEAVE_AFTER = 60.0          # seen empty this long: gone (a missed look or two is not leaving)
     NOTE_EVERY = 300.0          # a long sitting writes how long it has been, now and then
+    LEARN_AFTER = 90.0          # somebody this long in one place that is no seat yet: a new seat
+    LEARN_LOOKS = 3             # ...seen there in this many looks at least
+    LEARN_MISSES = 2            # a place empty in this many looks in a row is forgotten
 
     def __init__(self):
         super().__init__()
         self._state = {}        # (camera, seat id) -> _Seat
+        self._spots = {}        # camera -> places somebody stays that are no seat yet
         self.recorder = Recorder()
         threading.Thread(target=self._close_open, name="seat-close", daemon=True).start()
 
@@ -331,16 +378,32 @@ class SeatMonitor(Detector):
     # ---------- after a model check (pipeline worker) ----------
 
     def process(self, camera, frame, ts, seen):
-        seats = seats_of(camera)
-        if not seats and not any(k[0] == camera for k in self._state):
+        r = rules()
+        on = camera in r["cameras"]
+        if not on and not any(k[0] == camera for k in self._state):
+            with self._lock:
+                self._spots.pop(camera, None)
             return None
+        seats = seats_of(camera) if on else []       # turned off: every sitting there ends
         h, w = frame.shape[:2]
         taken = assign(seats, seen.people, w, h)
+        born = {}
+        if on and r["auto_seats"]:
+            free = [b for b in seen.people if all(b is not t for t in taken.values())]
+            new = self._learn(camera, free, ts, w, h, seats)
+            if new:
+                kept = clean_seats(seats + [s for s, _ in new])
+                config.update(SECTION, {camera: kept})
+                for s, (_, first) in zip(kept[len(seats):], new):
+                    born[s["id"]] = first            # the sitting began when they came
+                log.info("seat monitor: %d seat(s) found on %s", len(kept) - len(seats), camera)
+                seats = kept
+                taken = assign(seats, seen.people, w, h)
         begin, sat, ends, notes = [], [], [], []
         with self._lock:
             ids = {s["id"] for s in seats}
             for key in [k for k in self._state if k[0] == camera and k[1] not in ids]:
-                st = self._state.pop(key)            # seat removed on the page
+                st = self._state.pop(key)            # seat removed on the page, camera turned off
                 if st.state == SITTING:
                     ends.append((st.event, st.first, st.seen_at, None, None, list(st.shots), None))
                 elif st.clip is not None:
@@ -352,9 +415,9 @@ class SeatMonitor(Detector):
                 if box is not None:
                     st.seen_at, st.box, st.frame = ts, box, frame
                     if st.state == EMPTY:
-                        st.state, st.first, st.event, st.shots = PENDING, ts, None, []
+                        st.state, st.first, st.event, st.shots = PENDING, born.get(seat["id"], ts), None, []
                         begin.append((seat, st))
-                    elif st.state == PENDING and ts - st.first >= self.SIT_CONFIRM:
+                    elif st.state == PENDING and ts - st.first >= r["sit_after"]:
                         st.state, st.noted_at = SITTING, ts
                         sat.append((seat, st, box))
                     elif st.state == SITTING and st.event and ts - st.noted_at >= self.NOTE_EVERY:
@@ -364,11 +427,13 @@ class SeatMonitor(Detector):
                     if st.clip is not None:
                         st.clip.discard()
                     self._state[(camera, seat["id"])] = _Seat()
-                elif st.state == SITTING and ts - st.seen_at >= self.LEAVE_AFTER:
+                elif st.state == SITTING and ts - st.seen_at >= r["gone_after"]:
                     ends.append((st.event, st.first, st.seen_at, st.frame, st.box, list(st.shots), seat))
                     self._state[(camera, seat["id"])] = _Seat()
         for seat, st in begin:                        # outside the lock: opens a file
-            clip = self.recorder.start(camera, seat, (w, h), ts)
+            if not r["clips"]:
+                continue
+            clip = self.recorder.start(camera, seat, (w, h), ts, r["clip_seconds"])
             with self._lock:
                 if st.state != EMPTY:
                     st.clip = clip
@@ -381,6 +446,53 @@ class SeatMonitor(Detector):
         for end in ends:
             self._end(camera, *end)
         return None
+
+    def _learn(self, camera, people, ts, w, h, seats):
+        """Places where somebody stays put that are no seat yet. Once
+        somebody has been at one for LEARN_AFTER seconds it becomes a seat:
+        [(seat, when they came)]. A drawn seat is never needed this way."""
+        with self._lock:
+            spots = self._spots.setdefault(camera, [])
+            hit = []
+            for b in people:
+                best, k = None, 0.5
+                for sp in spots:
+                    j = _iou(sp["box"], b)
+                    if j >= k and all(sp is not x for x in hit):
+                        best, k = sp, j
+                if best is None:
+                    best = {"box": [float(v) for v in b[:4]], "first": ts, "looks": 0, "missed": 0}
+                    spots.append(best)
+                else:                                 # a little sway is the same place
+                    best["box"] = [a * 0.7 + c * 0.3 for a, c in zip(best["box"], b[:4])]
+                best["looks"] += 1
+                best["missed"] = 0
+                hit.append(best)
+            for sp in spots:
+                if all(sp is not x for x in hit):
+                    sp["missed"] += 1
+            spots[:] = [sp for sp in spots if sp["missed"] < self.LEARN_MISSES]
+            ready = [sp for sp in spots if sp["looks"] >= self.LEARN_LOOKS and ts - sp["first"] >= self.LEARN_AFTER]
+            for sp in ready:
+                spots.remove(sp)
+        new, have = [], [s["box"] for s in seats]
+        numbers = [int(s["name"][5:]) for s in seats if s["name"][:5] == "Seat " and s["name"][5:].isdigit()]
+        n = max(numbers + [len(seats)])
+        for sp in ready:
+            x1, y1, x2, y2 = sp["box"]
+            mx, my = (x2 - x1) * 0.1, (y2 - y1) * 0.05
+            box = [max(0.0, x1 - mx) / w, max(0.0, y1 - my) / h, min(w, x2 + mx) / w, min(h, y2 + my) / h]
+            if any(_iou(box, o) > 0.3 for o in have):
+                continue                              # mostly a seat already
+            n += 1
+            have.append(box)
+            new.append(({"id": "", "name": "Seat {}".format(n), "box": box}, sp["first"]))
+        return new
+
+    def learning(self):
+        """{camera: places being watched to become seats}, for the page."""
+        with self._lock:
+            return {cam: len(spots) for cam, spots in self._spots.items() if spots}
 
     def _begin(self, camera, seat, st, frame, box, ts):
         clip = st.clip
@@ -448,6 +560,7 @@ class SeatMonitor(Detector):
 
     def forget(self, camera):
         with self._lock:
+            self._spots.pop(camera, None)
             for key in [k for k in self._state if k[0] == camera]:
                 st = self._state.pop(key)
                 if st.clip is not None and st.state != SITTING:
