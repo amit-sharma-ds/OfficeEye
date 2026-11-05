@@ -187,6 +187,23 @@ def clothes(frame, box):
 
 # ---------------------------------------------------------------- clips
 
+def remove_clip(name):
+    """Delete a sitting's clip by hand (its meta "clip"). Only a file inside
+    the photo folder is ever touched."""
+    if not isinstance(name, str) or not name.endswith(".mp4"):
+        return False
+    root = os.path.realpath(photos.PHOTO_DIR)
+    path = os.path.realpath(os.path.join(photos.PHOTO_DIR, name))
+    if not path.startswith(root + os.sep) or not os.path.isfile(path):
+        return False
+    try:
+        os.remove(path)
+        return True
+    except OSError:
+        log.warning("could not delete %s", path)
+        return False
+
+
 class Clip:
     """One arrival filmed: the camera's newest frames, a few a second, cut
     to the seat and around it. Written to a temporary name and renamed when

@@ -139,7 +139,10 @@
       <button class="x" data-close aria-label="Close">&times;</button>
     </div>
     <video id="clip-video" controls autoplay muted playsinline></video>
-    <p class="hint" id="clip-note"></p>
+    <div class="row end">
+      <span class="hint" id="clip-note"></span>
+      <button class="danger sm" id="clip-del" title="Delete this clip - the record and its photos stay">Delete clip</button>
+    </div>
   </div>
 </div>
 {% endblock %}
@@ -328,6 +331,11 @@ function paintSeatPics(seats) {
 
 // ------------------------------------------------------------ history
 const day = $('#day');
+// The trash icon on a sitting's photo, and Select: the record, its photos and its clip go.
+const deleter = new DeleteList('#rows', {noun: 'sitting', reload: () => {
+  loadNow().catch(() => {});
+  if (day.value !== today()) loadDay().catch(() => {});
+}});
 async function loadDay() {
   if (day.value === today()) { dayRows = todayRows; paintDay(); return; }
   const r = await api(`/api/seats?day=${day.value}`);
@@ -357,7 +365,8 @@ function paintDay() {
   const pos = (t) => Math.min(100, Math.max(0, (t - base - from * 3600) / len * 100));
   $('#lines').innerHTML = shown.length ? shown.map(s => {
     const mine = spans.filter(x => x.ev.camera === s.cam && x.ev.meta.seat === s.id);
-    return `<div class="seat-line"><span title="${esc(camName(s.cam))}">${esc(s.name)}</span><div class="seat-track">` +
+    const label = new Set(shown.map(x => x.cam)).size > 1 ? `${s.name} · ${camName(s.cam).replace(/^Camera /, 'Cam ')}` : s.name;
+    return `<div class="seat-line"><span title="${esc(s.name + ' - ' + camName(s.cam))}">${esc(label)}</span><div class="seat-track">` +
       mine.map(x => `<i class="${x.going ? 'now' : ''}" style="left:${pos(x.a)}%;width:${Math.max(0.4, pos(x.b) - pos(x.a))}%"` +
         ` title="${hm(x.ev.meta.start || x.ev.ts)}-${x.going ? 'now' : hm(x.ev.meta.end || x.ev.meta.last)}"></i>`).join('') +
       `</div></div>`;
@@ -369,11 +378,12 @@ function paintDay() {
     return `<tr><td><b>${esc(m.seat_name || ev.label)}</b><br><span class="muted">${esc(camName(ev.camera))}</span></td>` +
       `<td>${hm(m.start || ev.ts)}</td><td>${left}</td><td class="num">${dur(sp.secs)}</td>` +
       `<td>${m.clothes ? `<span class="swatch" style="background:${SWATCH[m.clothes] || '#ccc'}"></span>${esc(m.clothes)}` : ''}</td>` +
-      `<td>${th ? `<img class="wash-th" src="${esc(th)}" alt="" data-ev="${ev.id}" title="${(m.photos || []).length} photo(s) - click">` : ''}</td>` +
+      `<td>${th ? delWrap(ev.id, `<img class="wash-th" src="${esc(th)}" alt="" data-ev="${ev.id}" title="${(m.photos || []).length} photo(s) - click">`, 'tbl') : ''}</td>` +
       `<td>${m.clip ? `<button class="ghost sm" data-clip="${ev.id}">Play</button>` : ''}</td></tr>`;
   }).join('') : `<tr><td colspan="7" class="empty">${seats.length ? 'Nobody sat at ' + (want ? 'this seat' : 'a marked seat') + ' on this day.' : 'No seats marked yet.'}</td></tr>`;
   $$('#rows [data-ev]').forEach(img => img.onclick = () => showPhotos(dayRows, +img.dataset.ev));
   $$('#rows [data-clip]').forEach(b => b.onclick = () => playClip(dayRows, +b.dataset.clip));
+  deleter.refresh(rows.filter(ev => eventThumb(ev)).map(ev => ev.id));
 }
 
 function showPhotos(rows, id) {
@@ -389,9 +399,39 @@ function playClip(rows, id) {
   $('#clip-note').textContent = 'The arrival at the seat, as the camera saw it.';
   v.onerror = () => { $('#clip-note').textContent = 'This clip cannot be played here - clips are kept on the office PC only (or it was cleared with the old photos).'; };
   v.src = '/photos/' + ev.meta.clip;
+  clipId = ev.id;
+  resetClipDel();
   openModal($('#clip'));
 }
 $('#clip').onclose = () => { const v = $('#clip-video'); v.pause(); v.removeAttribute('src'); v.load(); };
+
+// Delete only the clip (two clicks); the sitting and its photos stay.
+let clipId = null;
+const clipDel = $('#clip-del');
+function resetClipDel() {
+  clearTimeout(clipDel.undoTimer);
+  clipDel.classList.remove('sure');
+  clipDel.disabled = false;
+  clipDel.textContent = 'Delete clip';
+}
+clipDel.onclick = async () => {
+  if (!clipDel.classList.contains('sure')) {
+    clipDel.classList.add('sure');
+    clipDel.textContent = 'Click again to delete the clip';
+    clipDel.undoTimer = setTimeout(resetClipDel, 4000);
+    return;
+  }
+  clipDel.disabled = true;
+  const r = await post('/api/seats/clip/delete', {id: clipId});
+  resetClipDel();
+  if (r.ok) {
+    toast({title: 'Deleted', body: r.message, kind: 'info'});
+    closeModal($('#clip'));
+    deleter.reload();
+  } else if (r.message) {
+    $('#clip-note').textContent = r.message;
+  }
+};
 
 // ------------------------------------------------------------ setting up the seats
 const edit = {cam: null, seats: [], sel: -1, dirty: false};

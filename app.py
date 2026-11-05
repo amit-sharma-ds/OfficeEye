@@ -269,10 +269,10 @@ def api_alert_delete(event_id):
 
 
 # Records that can be deleted by hand, photos and all (the trash icon and
-# Select on the Phone use, Head down, Night vision and Washroom pages).
+# Select on the Phone use, Head down, Night vision, Washroom and Monitoring agent pages).
 DELETABLE = ("restricted_alert", "phone_use", "head_down", "night_activity",
              "washroom_visit", "washroom_in", "washroom_out", "washroom_door", "parking",
-             "camera_health", fire.KIND)
+             "camera_health", fire.KIND, seats.KIND)
 NOTICE_KINDS = ("parking", health.KIND, fire.KIND)      # shown as a note on every page
 
 
@@ -380,6 +380,7 @@ def api_records_delete():
             meta = events.delete(event_id, ev["kind"])
             if meta is not None:
                 photos.remove(meta.get("photos"))
+                seats.remove_clip(meta.get("clip"))      # a sitting's clip of the arrival
                 gone += 1
     return jsonify({"ok": True, "deleted": gone,
                     "message": "{} record{} deleted".format(gone, "" if gone == 1 else "s")})
@@ -795,6 +796,21 @@ def api_seats_save(cam_id):
         config.update(seats.RULES, {"cameras": on + [cam_id]})
     return jsonify({"ok": True, "seats": kept,
                     "message": "Saved: {} seat{}".format(len(kept), "" if len(kept) == 1 else "s")})
+
+
+@app.post("/api/seats/clip/delete")
+def api_seats_clip_delete():
+    """Delete only the clip of a sitting; the record and its photos stay."""
+    body = request.get_json(silent=True) or {}
+    try:
+        ev = events.get(int(body.get("id")))
+    except (TypeError, ValueError):
+        ev = None
+    if not ev or ev["kind"] != seats.KIND or not ev["meta"].get("clip"):
+        return jsonify({"ok": False, "message": "That clip is already gone"})
+    seats.remove_clip(ev["meta"]["clip"])
+    events.update_meta(ev["id"], {"clip": None})
+    return jsonify({"ok": True, "message": "Clip deleted"})
 
 
 @app.get("/api/seats/suggest")
