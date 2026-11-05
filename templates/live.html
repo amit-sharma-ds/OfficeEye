@@ -8,7 +8,7 @@
 
 <form class="search-box" id="sform" role="search">
   <input type="search" id="sq" value="{{ query or '' }}" maxlength="100" autocomplete="off"
-         placeholder="Search what the cameras see - kitne log, laal t-shirt, botal, helmet..."
+         placeholder="Search anything the cameras see - laal t-shirt, botal, phone, car, helmet..."
          aria-label="Search what the cameras see">
   <button class="primary" type="submit">Search</button>
 </form>
@@ -194,7 +194,7 @@ async function doSearch(text, quiet) {
     ? `<b>${esc(many(r.total, r.label))}</b> on ${plural(r.found_in, 'camera')}`
     : `<b>No ${esc(r.label.startsWith('people') ? r.label : r.label.replace(/s$/, ''))}</b> seen`;
   $('#s-meta').textContent = (r.checking
-      ? `Looking again: ${r.checking.done} of ${r.checking.total} cameras done...`
+      ? `Looking again at cameras with old pictures: ${r.checking.done} of ${r.checking.total} done...`
       : `${r.looked_at} cameras looked at - the oldest look ${lookedAgo(r.oldest)}`) +
     (r.no_colour && r.no_colour.length ? ` - no colour in the night pictures of ${r.no_colour.join(', ')}` : '');
   showFound(hits);
@@ -271,6 +271,8 @@ function clearSearch() {
 }
 
 $('#sform').onsubmit = (e) => { e.preventDefault(); doSearch($('#sq').value).catch(() => {}); };
+// The AI search model takes a minute to load: it starts while the search is typed.
+$('#sq').addEventListener('focus', () => post('/api/search/warm', {}).catch(() => {}), {once: true});
 $('#s-clear').onclick = clearSearch;
 // Every camera looked at again, then the search run again on the new pictures.
 $('#s-check').onclick = async () => {

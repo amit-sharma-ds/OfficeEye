@@ -958,7 +958,7 @@ class Pipeline:
         self._runs = deque(maxlen=400)        # (end, frames, seconds)
         self._lag = {config.COUNT: None, config.RESTRICTED: None}
         self._running_since = 0.0
-        self._look_all_at = 0.0     # "Check now" on the Search page
+        self._look = {}             # camera -> asked at: a fresh look for the Search
         self._jobs = deque()        # run_soon(): the AI search, one picture each
 
     # ---------- wiring ----------
@@ -1014,6 +1014,7 @@ class Pipeline:
         with self._lock:
             self._inbox.pop(camera, None)
             self._tracks.pop(camera, None)
+            self._look.pop(camera, None)
         self._smooth.forget(camera)
         for det in self._detectors:
             det.forget(camera)
@@ -1132,7 +1133,7 @@ class Pipeline:
             if seq == tr.seq or now - fts > self.STALE:
                 continue
             age = now - tr.ts if tr.ts else 1e9
-            forced = tr.ts < self._look_all_at          # asked for a fresh look (Search page)
+            forced = tr.ts < self._look.get(cam, 0.0)   # asked for a fresh look (Search page)
             if group == config.WASHROOM:
                 # Its door watch says how often: twice a second while the door
                 # is in use, about once a second while somebody walks near it,
@@ -1156,7 +1157,9 @@ class Pipeline:
 
             small = None
             if forced and not restricted:
-                pass                                        # looked at now, moving or not
+                # Looked at now, moving or not, the oldest first - a search
+                # waits for these, so not behind every camera with movement.
+                rank = min(rank, 0.5)
             elif tr.seen is not None and not tr.busy and \
                     age < (self.HEARTBEAT if restricted else refresh):
                 small = _small(frame)
@@ -1290,11 +1293,16 @@ class Pipeline:
             tr = self._tracks.get(camera)
             return tr.ver if tr else 0
 
-    def look_all(self):
-        """Look at every camera again soon, moving or not (Search -> Check now).
-        Restricted cameras still come first; this PC needs a minute or so."""
+    def look_all(self, older_than=0.0):
+        """Look again soon, moving or not, at every camera last looked at
+        older_than seconds ago or more (Search -> Check now: all of them; a
+        search on old pictures: the old ones). Restricted cameras still come
+        first; this PC needs about a second a camera."""
+        now = time.time()
         with self._lock:
-            self._look_all_at = time.time()
+            for cam, tr in self._tracks.items():
+                if now - tr.ts >= older_than:
+                    self._look[cam] = now
         self._wake.set()
 
     def class_names(self):
@@ -1308,13 +1316,20 @@ class Pipeline:
     def latest(self):
         """What the last check of each camera found, for the Search page:
         {camera: {"at": when, "seen": Seen, "size": (w, h), "live": frames
-        coming now}}, and since when a "Check now" is waiting (0 = none)."""
+        coming now}}, and the fresh looks asked for: {camera: asked at}."""
         now = time.time()
         with self._lock:
             out = {cam: {"at": tr.ts, "seen": tr.seen, "size": tr.size, "jpg": tr.jpg,
                          "live": now - self._inbox.get(cam, (None, 0.0))[1] < 15}
                    for cam, tr in self._tracks.items() if tr.seen is not None and tr.size}
-            return out, self._look_all_at
+            return out, dict(self._look)
+
+    def frame_now(self, camera):
+        """The camera's newest frame, if it is still coming - the AI search
+        looks at what is there now, not at the last check's picture."""
+        with self._lock:
+            frame, ts, _ = self._inbox.get(camera, (None, 0.0, 0))
+        return frame if frame is not None and time.time() - ts < 15 else None
 
     def run_soon(self, job):
         """Run job() on the detection worker - after any restricted-area check

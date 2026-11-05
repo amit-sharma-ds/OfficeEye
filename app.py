@@ -30,6 +30,7 @@ import search                       # the search box: people, phones, vehicles, 
 import push                         # phone alerts for the installed app (PWA)
 import health                       # camera health: offline, covered, moved, blurry
 import fire                         # fire and smoke on every camera
+import seats                        # who sits at each seat, with a clip of each arrival
 from cameras import manager
 from detection import phone_watch_state, pipeline
 
@@ -130,6 +131,11 @@ def night_page():
 @app.get("/parking")
 def parking_page():
     return _page("parking.html", "parking", cameras=manager.listing(config.COUNT))
+
+
+@app.get("/seats")
+def seats_page():
+    return _page("seats.html", "seats", cameras=manager.listing(config.COUNT))
 
 
 @app.get("/health")
@@ -708,10 +714,16 @@ def api_night():
 def api_search():
     """Search the cameras' latest checks (search.py). On the cloud view the
     office PC answers (cloud.RELAY_GET)."""
-    latest, look_all_at = pipeline.latest()
-    return jsonify(search.answer(request.args.get("q", "")[:100], latest, look_all_at,
-                                 config.cameras(), pipeline.class_names(),
-                                 pipeline.detector("phone")))
+    def answer():
+        latest, look = pipeline.latest()
+        return search.answer(request.args.get("q", "")[:100], latest, look, config.cameras(),
+                             pipeline.class_names(), pipeline.detector("phone")), latest, look
+
+    out, latest, look = answer()
+    if out["ok"] and search.stale(latest, look):
+        pipeline.look_all(search.FRESH)         # old pictures: looked at again, the answer follows
+        out = answer()[0]
+    return jsonify(out)
 
 
 @app.post("/api/search/check")
@@ -719,6 +731,13 @@ def api_search_check():
     """Search -> Check now: every camera is looked at again within a minute or so."""
     pipeline.look_all()
     return jsonify({"ok": True, "message": "Looking at every camera again"})
+
+
+@app.post("/api/search/warm")
+def api_search_warm():
+    """The search box got focus: the AI search model loads meanwhile."""
+    search.ai.warm()
+    return jsonify({"ok": True})
 
 
 @app.post("/api/search/ai")
@@ -736,6 +755,40 @@ def api_search_ai_start():
 def api_search_ai():
     have = [c for c in (request.args.get("have") or "").split(",") if c]
     return jsonify(search.ai.public(have))
+
+
+@app.get("/api/seats")
+def api_seats():
+    """The seats, who sits at them now, and the sittings of one day (the
+    Monitoring agent page). On the cloud view the office PC answers."""
+    try:
+        d = datetime.strptime(request.args.get("day", ""), "%Y-%m-%d")
+    except ValueError:
+        d = datetime.now()
+    day, nxt = d.strftime("%Y-%m-%d"), (d + timedelta(days=1)).strftime("%Y-%m-%d")
+    # A sitting that began the day before and went on into this day counts too.
+    prev = (d - timedelta(days=1)).strftime("%Y-%m-%d")
+    rows = [r for r in events.between([seats.KIND], prev, nxt, limit=5000)
+            if r["day"] == day or (r["meta"].get("end") or r["meta"].get("last") or "") >= day]
+    return jsonify({"day": day, "seats": config.get(seats.SECTION), "now": seats.detector.now(),
+                    "sittings": rows})
+
+
+@app.post("/api/seats/<cam_id>")
+def api_seats_save(cam_id):
+    if config.camera(cam_id) is None:
+        return jsonify({"ok": False, "message": "No such camera"})
+    body = request.get_json(silent=True) or {}
+    kept = seats.clean_seats(body.get("seats"))
+    config.update(seats.SECTION, {cam_id: kept})
+    return jsonify({"ok": True, "seats": kept,
+                    "message": "Saved: {} seat{}".format(len(kept), "" if len(kept) == 1 else "s")})
+
+
+@app.get("/api/seats/suggest")
+def api_seats_suggest():
+    """Seat boxes from the chairs and people the last check of a camera saw."""
+    return jsonify({"seats": seats.suggest(request.args.get("camera", ""))})
 
 
 def _parking_rules_out():

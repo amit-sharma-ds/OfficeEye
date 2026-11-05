@@ -1,0 +1,409 @@
+{% extends "base.html" %}
+{% block title %}Monitoring agent{% endblock %}
+
+{% block body %}
+<h1>Monitoring agent</h1>
+<p class="sub">Every seat you mark: who sat there, from when to when, and for how long - with a
+   photo and a short clip of each arrival, so the history of every seat can be looked back at.
+   It runs on the checks the cameras already get - no extra load.</p>
+<p class="hint privacy">Nobody is recognised by face: who sat is what the photo and the clip show
+   (the colour of the clothes helps to tell one sitting from the next). Tell the staff that the
+   seats are watched. Clips are kept on the office PC with the photos.</p>
+
+{% if cameras %}
+<div class="stats four">
+  <div class="stat"><div class="stat-k">Seats watched</div><div class="stat-n" id="k-seats">-</div>
+    <div class="stat-sub" id="k-cams">&nbsp;</div></div>
+  <div class="stat"><div class="stat-k">Taken now</div><div class="stat-n ok" id="k-now">-</div>
+    <div class="stat-sub" id="k-coming">&nbsp;</div></div>
+  <div class="stat"><div class="stat-k">Sittings today</div><div class="stat-n" id="k-sits">-</div>
+    <div class="stat-sub">each arrival at a seat</div></div>
+  <div class="stat"><div class="stat-k">Seat time today</div><div class="stat-n small" id="k-time">-</div>
+    <div class="stat-sub">all seats together</div></div>
+</div>
+
+<div class="card">
+  <div class="card-head"><h2>Seats now</h2><span class="hint-inline" id="now-hint"></span></div>
+  <div class="h-grid seat-grid" id="grid"><p class="empty">Loading&hellip;</p></div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <h2>History</h2>
+    <span class="hint-inline" id="day-count"></span>
+    <select id="f-seat" class="date"><option value="">All seats</option></select>
+    <input type="date" id="day" class="date">
+  </div>
+  <div class="seat-lines" id="lines"></div>
+  <div class="table-wrap">
+    <table class="records seat-tbl">
+      <thead><tr><th>Seat</th><th>Came</th><th>Left</th><th class="num">Sat for</th>
+                 <th>Clothes</th><th>Photos</th><th>Clip</th></tr></thead>
+      <tbody id="rows"><tr><td colspan="7" class="empty">Loading&hellip;</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <h2>Set up seats</h2>
+    <select id="cam" class="date">
+      {% for cam in cameras %}<option value="{{ cam.id }}">{{ cam.name }}</option>{% endfor %}
+    </select>
+  </div>
+  <p class="hint">Drag a box over each seat - the chair and where a person sitting on it shows
+     (head and shoulders too). Drag a box to move it, its bottom-right corner to resize it.
+     <b>Suggest</b> puts a box on every chair and person this camera sees now - keep the right
+     ones, delete the rest, give them names (a desk number or whose seat it is), then <b>Save</b>.</p>
+  <div class="seat-setup">
+    <div class="zone-wrap"><img id="s-img" alt=""><canvas id="s-canvas"></canvas></div>
+    <div class="seat-list" id="s-list"></div>
+  </div>
+  <div class="row end">
+    <span class="status" id="s-status"></span>
+    <button class="ghost" id="s-suggest">Suggest from chairs and people</button>
+    <button class="ghost" id="s-clear">Clear all</button>
+    <button class="primary" id="s-save">Save seats</button>
+  </div>
+</div>
+{% else %}
+<div class="card">
+  <p class="empty">No counting camera yet. Add the cameras that see the desks on the
+     <a href="/cameras">Cameras</a> page, then come back here and mark the seats.</p>
+</div>
+{% endif %}
+
+<!-- clip of an arrival -->
+<div class="modal" id="clip" hidden>
+  <div class="modal-box wide">
+    <div class="modal-head">
+      <b id="clip-title"></b>
+      <button class="x" data-close aria-label="Close">&times;</button>
+    </div>
+    <video id="clip-video" controls autoplay muted playsinline></video>
+    <p class="hint" id="clip-note"></p>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(() => {
+const CAMS = {{ cameras|map(attribute='id')|list|tojson }};
+if (!CAMS.length) return;                  // no counting camera: nothing on the page to run
+const CAM_NAMES = {{ cameras|map(attribute='name')|list|tojson }};
+const camName = (id) => CAM_NAMES[CAMS.indexOf(id)] || names[id] || id;
+const SWATCH = {red: '#dc2626', blue: '#2563eb', green: '#16a34a', yellow: '#eab308', black: '#111827',
+                white: '#ffffff', grey: '#9ca3af', orange: '#ea580c', pink: '#ec4899', purple: '#7c3aed',
+                brown: '#92400e'};
+const hm = (iso) => (iso || '').slice(11, 16);
+const dur = (s) => s == null ? '' : s < 60 ? `${s} s` : s < 3600 ? `${Math.round(s / 60)} min`
+  : `${Math.floor(s / 3600)} h ${String(Math.round(s % 3600 / 60)).padStart(2, '0')} min`;
+const secs = (iso) => new Date(iso).getTime() / 1000;
+let seatsCfg = {}, now = {}, todayRows = [], dayRows = [];
+
+// Every seat of every counting camera, in camera order: {cam, id, name, box}.
+function allSeats() {
+  const out = [];
+  CAMS.forEach(cam => (seatsCfg[cam] || []).forEach(s => out.push(Object.assign({cam}, s))));
+  return out;
+}
+const live = (s) => (now[s.cam] || {})[s.id];
+const ofSeat = (rows, s) => rows.filter(r => r.camera === s.cam && r.meta.seat === s.id);
+// How long a sitting lasted (or has lasted so far), clipped to one day.
+function spanOf(ev, day) {
+  const m = ev.meta, st = live({cam: ev.camera, id: m.seat});
+  const going = !m.end && st && st.event === ev.id;
+  const a = Math.max(secs(m.start || ev.ts), secs(day + 'T00:00:00'));
+  const endIso = going ? null : (m.end || m.last || ev.ts);
+  const b = Math.min(going ? Date.now() / 1000 : secs(endIso), secs(day + 'T23:59:59'));
+  return {a, b, going, secs: Math.max(0, Math.round(b - a))};
+}
+
+// ------------------------------------------------------------ seats now
+async function loadNow() {
+  const r = await api('/api/seats');
+  seatsCfg = r.seats || {}; now = r.now || {}; todayRows = r.sittings || [];
+  if (day.value === r.day) { dayRows = todayRows; paintDay(); }
+  paintNow(r.day);
+}
+
+function paintNow(today) {
+  const seats = allSeats();
+  const taken = seats.filter(s => (live(s) || {}).state === 'sitting').length;
+  const coming = seats.filter(s => (live(s) || {}).state === 'pending').length;
+  const total = todayRows.reduce((t, ev) => t + spanOf(ev, today).secs, 0);
+  $('#k-seats').textContent = seats.length;
+  $('#k-cams').textContent = seats.length ? `on ${plural(new Set(seats.map(s => s.cam)).size, 'camera')}` : 'mark them below';
+  $('#k-now').textContent = taken;
+  $('#k-coming').textContent = coming ? `${coming} just arriving` : (seats.length ? `${seats.length - taken} empty` : ' ');
+  $('#k-sits').textContent = todayRows.length;
+  $('#k-time').textContent = total ? dur(total) : '0';
+  $('#now-hint').textContent = seats.length ? 'click a seat for its history' : '';
+
+  const grid = $('#grid');
+  if (!seats.length) {
+    grid.innerHTML = '<p class="empty">No seats marked yet - mark them in <b>Set up seats</b> below.</p>';
+    return;
+  }
+  grid.innerHTML = seats.map((s, i) => {
+    const st = live(s) || {}, rows = ofSeat(todayRows, s);
+    const time = rows.reduce((t, ev) => t + spanOf(ev, today).secs, 0);
+    const last = rows[0];
+    const state = st.state === 'sitting' ? 'taken' : st.state === 'pending' ? 'arriving' : 'empty';
+    const chip = {taken: 'Taken', arriving: 'Somebody arriving', empty: 'Empty'}[state];
+    const text = state === 'taken' ? `since ${hm(st.since)} - ${dur(Math.round(Date.now() / 1000 - secs(st.since)))}`
+      : state === 'arriving' ? `since ${hm(st.since)}`
+      : last ? `last left ${hm(last.meta.end || last.meta.last)}` : 'nobody today';
+    const who = last && last.meta.clothes ? `<span class="swatch" style="background:${SWATCH[last.meta.clothes] || '#ccc'}"></span>${esc(last.meta.clothes)} clothes` : '';
+    return `<div class="h-card s-${state}" data-i="${i}">
+      <div class="h-pic" role="button" tabindex="0" title="Watch ${esc(camName(s.cam))} live">
+        <canvas class="seat-pic" data-i="${i}"></canvas><span class="h-chip s-${state}">${chip}</span></div>
+      <div class="h-body"><b>${esc(s.name)}</b><span class="h-text">${esc(text)}</span>
+        <span class="h-since">${esc(camName(s.cam))} · today ${plural(rows.length, 'sitting')}${time ? ' · ' + dur(time) : ''}</span>
+        ${last ? `<span class="h-since seat-last">${eventThumb(last) ? `<img class="h-th" src="${esc(eventThumb(last))}" alt="" data-ev="${last.id}">` : ''}
+          <span>last came ${hm(last.meta.start || last.ts)} ${who}</span>
+          ${last.meta.clip ? `<button class="ghost sm" data-clip="${last.id}">Clip</button>` : ''}</span>` : ''}
+      </div></div>`;
+  }).join('');
+  $$('#grid .h-pic').forEach(p => p.onclick = () => {
+    const s = seats[+p.closest('.h-card').dataset.i];
+    openLive(s.cam, camName(s.cam));
+  });
+  $$('#grid .h-card').forEach(c => c.onclick = (e) => {
+    if (e.target.closest('.h-pic, button, img')) return;
+    const s = seats[+c.dataset.i];
+    $('#f-seat').value = s.cam + '|' + s.id;
+    paintDay();
+    $('#rows').closest('.card').scrollIntoView({behavior: 'smooth'});
+  });
+  $$('#grid [data-ev]').forEach(img => img.onclick = () => showPhotos(todayRows, +img.dataset.ev));
+  $$('#grid [data-clip]').forEach(b => b.onclick = () => playClip(todayRows, +b.dataset.clip));
+  paintSeatPics(seats);
+}
+
+// Each seat as the camera sees it now: one picture a camera, cut per seat
+// to the card's shape. The last picture is kept, so a refresh never blanks it.
+const camPics = {};
+function drawSeatPic(img, s, i) {
+  const cv = $(`#grid canvas[data-i="${i}"]`);
+  if (!cv) return;
+  const W = img.naturalWidth, H = img.naturalHeight, [x1, y1, x2, y2] = s.box;
+  let w = (x2 - x1) * W * 1.5, h = (y2 - y1) * H * 1.5;          // the seat and around it
+  if (w / h < 16 / 9) w = h * 16 / 9; else h = w * 9 / 16;
+  const k0 = Math.min(1, W / w, H / h);
+  w *= k0; h *= k0;
+  const a = Math.min(Math.max((x1 + x2) / 2 * W - w / 2, 0), W - w);
+  const b = Math.min(Math.max((y1 + y2) / 2 * H - h / 2, 0), H - h);
+  cv.width = 320; cv.height = 180;
+  const g = cv.getContext('2d'), k = 320 / w;
+  g.drawImage(img, a, b, w, h, 0, 0, 320, 180);
+  g.strokeStyle = '#14b8a6'; g.lineWidth = 2;
+  g.strokeRect((x1 * W - a) * k, (y1 * H - b) * k, (x2 - x1) * W * k, (y2 - y1) * H * k);
+}
+function paintSeatPics(seats) {
+  [...new Set(seats.map(s => s.cam))].forEach(cam => {
+    const mine = () => seats.forEach((s, i) => { if (s.cam === cam) drawSeatPic(camPics[cam], s, i); });
+    if (camPics[cam]) mine();
+    const img = new Image();
+    img.onload = () => { camPics[cam] = img; mine(); };
+    img.src = `/frame/${encodeURIComponent(cam)}.jpg?w=640&overlay=0&caption=0&t=${Date.now()}`;
+  });
+}
+
+// ------------------------------------------------------------ history
+const day = $('#day');
+async function loadDay() {
+  if (day.value === today()) { dayRows = todayRows; paintDay(); return; }
+  const r = await api(`/api/seats?day=${day.value}`);
+  seatsCfg = r.seats || seatsCfg;
+  dayRows = r.sittings || [];
+  paintDay();
+}
+
+function paintDay() {
+  const seats = allSeats(), pick = $('#f-seat').value;
+  const opts = '<option value="">All seats</option>' + seats.map(s =>
+    `<option value="${esc(s.cam + '|' + s.id)}">${esc(s.name)} (${esc(camName(s.cam))})</option>`).join('');
+  if ($('#f-seat').innerHTML !== opts) { $('#f-seat').innerHTML = opts; $('#f-seat').value = pick; }
+  const want = $('#f-seat').value;
+  const rows = dayRows.filter(r => !want || r.camera + '|' + r.meta.seat === want);
+  const shown = want ? seats.filter(s => s.cam + '|' + s.id === want) : seats;
+  $('#day-count').textContent = rows.length ? plural(rows.length, 'sitting') : '';
+
+  // One line a seat across the day: when it was taken.
+  const spans = rows.map(ev => Object.assign({ev}, spanOf(ev, day.value)));
+  const hours = spans.length ? spans.map(s => new Date(s.a * 1000).getHours()) : [9];
+  const ends = spans.length ? spans.map(s => new Date(s.b * 1000).getHours() + 1) : [19];
+  const from = Math.min(8, ...hours), to = Math.max(20, ...ends);
+  const base = secs(day.value + 'T00:00:00'), len = (to - from) * 3600;
+  const pos = (t) => Math.min(100, Math.max(0, (t - base - from * 3600) / len * 100));
+  $('#lines').innerHTML = shown.length ? shown.map(s => {
+    const mine = spans.filter(x => x.ev.camera === s.cam && x.ev.meta.seat === s.id);
+    return `<div class="seat-line"><span title="${esc(camName(s.cam))}">${esc(s.name)}</span><div class="seat-track">` +
+      mine.map(x => `<i class="${x.going ? 'now' : ''}" style="left:${pos(x.a)}%;width:${Math.max(0.4, pos(x.b) - pos(x.a))}%"` +
+        ` title="${hm(x.ev.meta.start || x.ev.ts)}-${x.going ? 'now' : hm(x.ev.meta.end || x.ev.meta.last)}"></i>`).join('') +
+      `</div></div>`;
+  }).join('') + `<div class="seat-axis">${Array.from({length: to - from + 1}, (_, k) => `<span>${from + k}</span>`).join('')}</div>` : '';
+
+  $('#rows').innerHTML = rows.length ? rows.map(ev => {
+    const m = ev.meta, sp = spanOf(ev, day.value), th = eventThumb(ev);
+    const left = sp.going ? '<span class="tag green">still there</span>' : hm(m.end || m.last) + (m.end ? '' : ' ?');
+    return `<tr><td><b>${esc(m.seat_name || ev.label)}</b><br><span class="muted">${esc(camName(ev.camera))}</span></td>` +
+      `<td>${hm(m.start || ev.ts)}</td><td>${left}</td><td class="num">${dur(sp.secs)}</td>` +
+      `<td>${m.clothes ? `<span class="swatch" style="background:${SWATCH[m.clothes] || '#ccc'}"></span>${esc(m.clothes)}` : ''}</td>` +
+      `<td>${th ? `<img class="wash-th" src="${esc(th)}" alt="" data-ev="${ev.id}" title="${(m.photos || []).length} photo(s) - click">` : ''}</td>` +
+      `<td>${m.clip ? `<button class="ghost sm" data-clip="${ev.id}">Play</button>` : ''}</td></tr>`;
+  }).join('') : `<tr><td colspan="7" class="empty">${seats.length ? 'Nobody sat at ' + (want ? 'this seat' : 'a marked seat') + ' on this day.' : 'No seats marked yet.'}</td></tr>`;
+  $$('#rows [data-ev]').forEach(img => img.onclick = () => showPhotos(dayRows, +img.dataset.ev));
+  $$('#rows [data-clip]').forEach(b => b.onclick = () => playClip(dayRows, +b.dataset.clip));
+}
+
+function showPhotos(rows, id) {
+  const ev = rows.find(r => r.id === id);
+  if (ev) openPhotos(eventPhotos(ev, `${ev.meta.seat_name || ev.label} - ${camName(ev.camera)}`), 0);
+}
+
+function playClip(rows, id) {
+  const ev = rows.find(r => r.id === id);
+  if (!ev || !ev.meta.clip) return;
+  const v = $('#clip-video');
+  $('#clip-title').textContent = `${ev.meta.seat_name || ev.label} - ${camName(ev.camera)} - came ${hm(ev.meta.start || ev.ts)}`;
+  $('#clip-note').textContent = 'The arrival at the seat, as the camera saw it.';
+  v.onerror = () => { $('#clip-note').textContent = 'This clip cannot be played here - clips are kept on the office PC only (or it was cleared with the old photos).'; };
+  v.src = '/photos/' + ev.meta.clip;
+  openModal($('#clip'));
+}
+$('#clip').onclose = () => { const v = $('#clip-video'); v.pause(); v.removeAttribute('src'); v.load(); };
+
+// ------------------------------------------------------------ setting up the seats
+const edit = {cam: null, seats: [], sel: -1, dirty: false};
+const cv = $('#s-canvas'), simg = $('#s-img');
+let drag = null;
+
+function loadEditor(cam) {
+  edit.cam = cam;
+  edit.seats = (seatsCfg[cam] || []).map(s => ({id: s.id, name: s.name, box: s.box.slice()}));
+  edit.sel = -1; edit.dirty = false;
+  simg.onload = () => { fit(); draw(); };
+  simg.src = `/frame/${encodeURIComponent(cam)}.jpg?w=960&overlay=0&caption=0&t=${Date.now()}`;
+  paintList();
+}
+function fit() { cv.width = simg.clientWidth; cv.height = simg.clientHeight; }
+window.addEventListener('resize', () => { if (simg.complete) { fit(); draw(); } });
+
+function draw() {
+  const g = cv.getContext('2d'), W = cv.width, H = cv.height;
+  g.clearRect(0, 0, W, H);
+  g.font = '600 12px "Segoe UI", sans-serif';
+  edit.seats.forEach((s, i) => {
+    const [x1, y1, x2, y2] = s.box, on = i === edit.sel;
+    g.fillStyle = on ? 'rgba(20, 184, 166, .28)' : 'rgba(20, 184, 166, .14)';
+    g.fillRect(x1 * W, y1 * H, (x2 - x1) * W, (y2 - y1) * H);
+    g.strokeStyle = on ? '#0f766e' : '#14b8a6'; g.lineWidth = on ? 3 : 2;
+    g.strokeRect(x1 * W, y1 * H, (x2 - x1) * W, (y2 - y1) * H);
+    const label = `${i + 1}. ${s.name || 'Seat ' + (i + 1)}`, tw = g.measureText(label).width;
+    g.fillStyle = on ? '#0f766e' : '#14b8a6';
+    g.fillRect(x1 * W, y1 * H, tw + 10, 18);
+    g.fillStyle = '#fff'; g.fillText(label, x1 * W + 5, y1 * H + 13);
+    g.fillStyle = '#fff'; g.fillRect(x2 * W - 6, y2 * H - 6, 10, 10);
+    g.strokeStyle = '#0f766e'; g.lineWidth = 1; g.strokeRect(x2 * W - 6, y2 * H - 6, 10, 10);
+  });
+}
+
+function paintList() {
+  $('#s-list').innerHTML = edit.seats.length ? edit.seats.map((s, i) =>
+    `<div class="seat-item ${i === edit.sel ? 'on' : ''}" data-i="${i}"><span class="seat-num">${i + 1}</span>` +
+    `<input value="${esc(s.name)}" maxlength="40" placeholder="Seat ${i + 1}" aria-label="Name of seat ${i + 1}">` +
+    `<button class="x" title="Delete this seat" aria-label="Delete seat ${i + 1}">&times;</button></div>`).join('')
+    : '<p class="empty">No seats on this camera yet - drag a box over a seat in the picture.</p>';
+  $$('#s-list .seat-item').forEach(row => {
+    const i = +row.dataset.i;
+    $('input', row).oninput = (e) => { edit.seats[i].name = e.target.value; edit.dirty = true; draw(); };
+    $('input', row).onfocus = () => { edit.sel = i; draw(); $$('#s-list .seat-item').forEach(r => r.classList.toggle('on', r === row)); };
+    $('button', row).onclick = () => { edit.seats.splice(i, 1); edit.sel = -1; edit.dirty = true; paintList(); draw(); };
+  });
+}
+
+function at(e) {
+  const r = cv.getBoundingClientRect();
+  return [Math.min(Math.max((e.clientX - r.left) / r.width, 0), 1),
+          Math.min(Math.max((e.clientY - r.top) / r.height, 0), 1)];
+}
+cv.onpointerdown = (e) => {
+  const p = at(e), W = cv.width, H = cv.height;
+  const corner = edit.seats.findIndex(s => Math.hypot((s.box[2] - p[0]) * W, (s.box[3] - p[1]) * H) < 12);
+  const inside = edit.seats.findIndex(s => p[0] >= s.box[0] && p[0] <= s.box[2] && p[1] >= s.box[1] && p[1] <= s.box[3]);
+  if (corner >= 0) drag = {mode: 'size', i: corner};
+  else if (inside >= 0) drag = {mode: 'move', i: inside, from: p, box: edit.seats[inside].box.slice()};
+  else {
+    edit.seats.push({id: '', name: '', box: [p[0], p[1], p[0], p[1]]});
+    drag = {mode: 'new', i: edit.seats.length - 1, from: p};
+  }
+  edit.sel = drag.i;
+  cv.setPointerCapture(e.pointerId);
+  draw();
+};
+cv.onpointermove = (e) => {
+  if (!drag) return;
+  const p = at(e), s = edit.seats[drag.i];
+  if (drag.mode === 'new') s.box = [Math.min(drag.from[0], p[0]), Math.min(drag.from[1], p[1]),
+                                    Math.max(drag.from[0], p[0]), Math.max(drag.from[1], p[1])];
+  else if (drag.mode === 'size') s.box = [s.box[0], s.box[1], Math.max(p[0], s.box[0] + 0.02), Math.max(p[1], s.box[1] + 0.02)];
+  else {
+    const dx = Math.min(Math.max(p[0] - drag.from[0], -drag.box[0]), 1 - drag.box[2]);
+    const dy = Math.min(Math.max(p[1] - drag.from[1], -drag.box[1]), 1 - drag.box[3]);
+    s.box = [drag.box[0] + dx, drag.box[1] + dy, drag.box[2] + dx, drag.box[3] + dy];
+  }
+  edit.dirty = true;
+  draw();
+};
+cv.onpointerup = () => {
+  if (!drag) return;
+  const s = edit.seats[drag.i];
+  if (drag.mode === 'new' && (s.box[2] - s.box[0] < 0.02 || s.box[3] - s.box[1] < 0.02)) {
+    edit.seats.splice(drag.i, 1);            // a click, not a box
+    edit.sel = -1;
+  }
+  drag = null;
+  paintList(); draw();
+};
+
+$('#s-suggest').onclick = async () => {
+  const r = await api(`/api/seats/suggest?camera=${encodeURIComponent(edit.cam)}`);
+  const inter = (a, b) => Math.max(0, Math.min(a[2], b[2]) - Math.max(a[0], b[0])) * Math.max(0, Math.min(a[3], b[3]) - Math.max(a[1], b[1]));
+  const area = (a) => (a[2] - a[0]) * (a[3] - a[1]);
+  const fresh = (r.seats || []).filter(n => !edit.seats.some(s => inter(s.box, n.box) > 0.4 * Math.min(area(s.box), area(n.box))));
+  fresh.forEach(n => edit.seats.push({id: '', name: '', box: n.box}));
+  if (fresh.length) edit.dirty = true;
+  $('#s-status').textContent = fresh.length ? `${plural(fresh.length, 'seat')} suggested - delete the wrong ones, then Save`
+    : 'Nothing new found - drag boxes by hand';
+  paintList(); draw();
+};
+$('#s-clear').onclick = () => { edit.seats = []; edit.sel = -1; edit.dirty = true; paintList(); draw(); };
+$('#s-save').onclick = async () => {
+  const r = await post(`/api/seats/${encodeURIComponent(edit.cam)}`, {seats: edit.seats});
+  $('#s-status').textContent = r.message || '';
+  if (r.ok) {
+    seatsCfg[edit.cam] = r.seats;
+    edit.dirty = false;
+    loadEditor(edit.cam);
+    loadNow().catch(() => {});
+  }
+};
+$('#cam').onchange = () => {
+  if (edit.dirty && !confirm('Leave this camera without saving its seats?')) { $('#cam').value = edit.cam; return; }
+  edit.dirty = false;
+  loadEditor($('#cam').value);
+};
+
+// ------------------------------------------------------------ start
+day.value = today(); day.max = today();
+day.onchange = () => loadDay().catch(() => {});
+$('#f-seat').onchange = () => paintDay();
+edit.cam = $('#cam').value;
+loadNow().then(() => loadEditor(edit.cam)).catch(() => {});
+setInterval(() => loadNow().catch(() => {}), 10000);
+})();
+</script>
+{% endblock %}
