@@ -625,3 +625,4 @@ table.cams tr.fresh td { background: #eef2ff; }
   .seat-line { grid-template-columns: 115px 1fr; }
   .seat-axis { margin-left: 123px; }
 }
+#s-save.saved, #r-save.saved { background: var(--green); border-color: var(--green); }

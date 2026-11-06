@@ -54,6 +54,7 @@ TEAL = (160, 140, 20)           # BGR
 EMPTY, PENDING, SITTING = "empty", "pending", "sitting"
 
 
+BLOCKED = "seats_blocked"       # config: {camera: [box, ...]} - seats deleted by hand: never found again
 RULES = "seat_rules"            # config: the page's Settings tab
 DEFAULT_RULES = {
     "cameras": None,            # the cameras watched; None: those with seats
@@ -68,6 +69,31 @@ LIMITS = {"sit_after": (5, 600), "gone_after": (15, 1800), "clip_seconds": (4, 3
 
 def seats_of(camera):
     return list(config.get(SECTION).get(camera) or [])
+
+
+def blocked_of(camera):
+    return list(config.get(BLOCKED).get(camera) or [])
+
+
+def save_seats(camera, items, forget=False):
+    """Save a camera's seats from the Draw seats tab. A seat deleted there
+    is a place that is no seat - somebody sits there now and then, but it is
+    not wanted - so the seats that find themselves never put it back. A seat
+    drawn over such a place takes it back; `forget` clears them all.
+    Returns (seats, places that are no seat)."""
+    old, kept = seats_of(camera), clean_seats(items)
+    ids = {s["id"] for s in kept}
+    blocked = [] if forget else blocked_of(camera)
+    blocked += [s["box"] for s in old if s["id"] not in ids]
+    out = []
+    for b in blocked:
+        if any(_iou(b, s["box"]) > 0.5 for s in kept) or any(_iou(b, o) > 0.7 for o in out):
+            continue                        # drawn again by hand, or the same place twice
+        out.append([round(float(v), 4) for v in b])
+    out = out[-100:]
+    config.update(SECTION, {camera: kept})
+    config.update(BLOCKED, {camera: out})
+    return kept, out
 
 
 def rules():
@@ -138,6 +164,11 @@ def _iou(a, b):
     inter = _inter(a, b)
     union = _area(a) + _area(b) - inter
     return inter / union if union > 0 else 0.0
+
+
+def _at(box, place):
+    """Box (a person, a seat) is at this place: mostly inside it, or much the same."""
+    return _inter(box, place) >= 0.6 * max(1e-9, _area(box)) or _iou(box, place) >= 0.3
 
 
 def _inter(a, b):
@@ -467,7 +498,10 @@ class SeatMonitor(Detector):
     def _learn(self, camera, people, ts, w, h, seats):
         """Places where somebody stays put that are no seat yet. Once
         somebody has been at one for LEARN_AFTER seconds it becomes a seat:
-        [(seat, when they came)]. A drawn seat is never needed this way."""
+        [(seat, when they came)]. A drawn seat is never needed this way. A
+        place whose seat was deleted by hand is left alone for good."""
+        nope = blocked_of(camera)
+        people = [b for b in people if not any(_at([b[0] / w, b[1] / h, b[2] / w, b[3] / h], p) for p in nope)]
         with self._lock:
             spots = self._spots.setdefault(camera, [])
             hit = []
@@ -499,8 +533,8 @@ class SeatMonitor(Detector):
             x1, y1, x2, y2 = sp["box"]
             mx, my = (x2 - x1) * 0.1, (y2 - y1) * 0.05
             box = [max(0.0, x1 - mx) / w, max(0.0, y1 - my) / h, min(w, x2 + mx) / w, min(h, y2 + my) / h]
-            if any(_iou(box, o) > 0.3 for o in have):
-                continue                              # mostly a seat already
+            if any(_iou(box, o) > 0.3 for o in have) or any(_at(box, p) for p in nope):
+                continue                              # mostly a seat already, or no seat wanted
             n += 1
             have.append(box)
             new.append(({"id": "", "name": "Seat {}".format(n), "box": box}, sp["first"]))
@@ -607,13 +641,15 @@ def suggest(camera):
     for p in seen.people:
         if not any(_inter(p, c) > 0.3 * _area(p) for c in boxes):
             boxes.append(list(p[:4]))
-    out = []
+    out, nope = [], blocked_of(camera)
     for b in sorted(boxes, key=lambda b: (b[1] + b[3], b[0])):
         bw, bh = b[2] - b[0], b[3] - b[1]           # a little room: a person shows above the chair
         x1, y1 = max(0, b[0] - bw * 0.1), max(0, b[1] - bh * 0.35)
         x2, y2 = min(w, b[2] + bw * 0.1), min(h, b[3] + bh * 0.05)
         if any(_inter((x1, y1, x2, y2), _px(o["box"], w, h)) > 0.5 * _area((x1, y1, x2, y2)) for o in out):
             continue
+        if any(_at([x1 / w, y1 / h, x2 / w, y2 / h], p) for p in nope):
+            continue                                # deleted by hand: no seat wanted there
         out.append({"id": "", "name": "", "box": [x1 / w, y1 / h, x2 / w, y2 / h]})
     return clean_seats(out)
 
