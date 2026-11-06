@@ -772,8 +772,7 @@ def api_seats():
     rows = [r for r in events.between([seats.KIND], prev, nxt, limit=5000)
             if r["day"] == day or (r["meta"].get("end") or r["meta"].get("last") or "") >= day]
     return jsonify({"day": day, "seats": config.get(seats.SECTION), "now": seats.detector.now(),
-                    "rules": seats.rules(), "learning": seats.detector.learning(),
-                    "blocked": config.get(seats.BLOCKED), "sittings": rows})
+                    "rules": seats.rules(), "sittings": rows})
 
 
 @app.post("/api/seats/rules")
@@ -790,11 +789,12 @@ def api_seats_save(cam_id):
     if config.camera(cam_id) is None:
         return jsonify({"ok": False, "message": "No such camera"})
     body = request.get_json(silent=True) or {}
-    kept, blocked = seats.save_seats(cam_id, body.get("seats"), forget=bool(body.get("forget")))
+    kept = seats.clean_seats(body.get("seats"))
+    config.update(seats.SECTION, {cam_id: kept})
     on = seats.rules()["cameras"]
     if kept and cam_id not in on:                   # seats drawn: the camera is watched
         config.update(seats.RULES, {"cameras": on + [cam_id]})
-    return jsonify({"ok": True, "seats": kept, "blocked": blocked,
+    return jsonify({"ok": True, "seats": kept,
                     "message": "Saved: {} seat{}".format(len(kept), "" if len(kept) == 1 else "s")})
 
 

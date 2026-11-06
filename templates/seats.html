@@ -5,8 +5,8 @@
 <h1>Monitoring agent</h1>
 <p class="sub">Every seat on the cameras you switch on: who sat there, from when to when, and for
    how long - with a photo and a short clip of each arrival, so the history of every seat can be
-   looked back at. Seats find themselves: where somebody stays put for a minute or two becomes a
-   seat. It runs on the checks the cameras already get - no extra model time.</p>
+   looked back at. Seats are put under <b>Draw seats</b> - dragged by hand or by <b>Suggest</b>.
+   It runs on the checks the cameras already get - no extra model time.</p>
 <p class="hint privacy">Nobody is recognised by face: who sat is what the photo and the clip show
    (the colour of the clothes helps to tell one sitting from the next). Tell the staff that the
    seats are watched. Clips are kept on the office PC with the photos.</p>
@@ -31,12 +31,7 @@
           <small class="muted" data-seats="{{ cam.id }}"></small></label>{% endfor %}
       </div>
       <p class="hint">Tick a camera to watch its seats; untick it to stop (a sitting going on there
-         ends, the history stays). A camera that is on finds its seats by itself.</p>
-    </div>
-    <div class="rule">
-      <label><input type="checkbox" id="r-auto"> Find the seats by themselves</label>
-      <p class="hint">A place where somebody stays put for about a minute and a half becomes a seat
-         ("Seat 4" - rename or move it under <b>Draw seats</b>). Off: only the seats drawn by hand.</p>
+         ends, the history stays). Its seats are put under <b>Draw seats</b>.</p>
     </div>
     <div class="rule">
       <label for="r-sit">Sitting after</label>
@@ -107,20 +102,17 @@
       {% for cam in cameras %}<option value="{{ cam.id }}">{{ cam.name }}</option>{% endfor %}
     </select>
   </div>
-  <p class="hint">Not needed on a camera that is on - its seats find themselves. Here they can be
-     named (a desk number or whose seat it is), moved, deleted, or drawn by hand: drag a box over
-     a seat - the chair and where a person sitting on it shows (head and shoulders too). Drag a box
-     to move it, its bottom-right corner to resize it. <b>Suggest</b> puts a box on every chair and
-     person this camera sees now. Then <b>Save</b> - saving also switches the camera on.
-     A seat you delete stays deleted: its place is marked <b>not a seat</b> (red) and is never
-     found again by itself.</p>
+  <p class="hint">Drag a box over each seat - the chair and where a person sitting on it shows
+     (head and shoulders too) - or press <b>Suggest</b> to put a box on every chair and person this
+     camera sees now. Drag a box to move it, its bottom-right corner to resize it; name it (a desk
+     number or whose seat it is) or delete it on the right. Then <b>Save</b> - saving also switches
+     the camera on. Only these seats are watched; nothing is added by itself.</p>
   <div class="seat-setup">
     <div class="zone-wrap"><img id="s-img" alt=""><canvas id="s-canvas"></canvas></div>
     <div class="seat-list" id="s-list"></div>
   </div>
   <div class="row end">
     <span class="status" id="s-status"></span>
-    <button class="ghost" id="s-forget" hidden title="Seats may be found there again">Allow deleted places again</button>
     <button class="ghost" id="s-suggest">Suggest from chairs and people</button>
     <button class="ghost" id="s-clear">Clear all</button>
     <button class="primary" id="s-save">Save seats</button>
@@ -164,7 +156,7 @@ const hm = (iso) => (iso || '').slice(11, 16);
 const dur = (s) => s == null ? '' : s < 60 ? `${s} s` : s < 3600 ? `${Math.round(s / 60)} min`
   : `${Math.floor(s / 3600)} h ${String(Math.round(s % 3600 / 60)).padStart(2, '0')} min`;
 const secs = (iso) => new Date(iso).getTime() / 1000;
-let seatsCfg = {}, now = {}, todayRows = [], dayRows = [], rules = {cameras: []}, learning = {}, blockedCfg = {};
+let seatsCfg = {}, now = {}, todayRows = [], dayRows = [], rules = {cameras: []};
 const isOn = (cam) => (rules.cameras || []).includes(cam);
 
 // Every seat, in camera order: {cam, id, name, box} - of the cameras that
@@ -188,14 +180,13 @@ $$('.tabs button').forEach(b => b.onclick = () => showTab(b.dataset.tab));
 let rulesShown = false;
 function paintRules(force) {
   $$('#r-cams [data-seats]').forEach(el => {
-    const n = (seatsCfg[el.dataset.seats] || []).length, l = learning[el.dataset.seats];
-    el.textContent = n ? `${plural(n, 'seat')}` : isOn(el.dataset.seats) ? (l ? 'finding seats' : 'no seats yet') : '';
+    const n = (seatsCfg[el.dataset.seats] || []).length;
+    el.textContent = n ? `${plural(n, 'seat')}` : isOn(el.dataset.seats) ? 'no seats yet' : '';
   });
   $('#r-count').textContent = `${(rules.cameras || []).length} of ${CAMS.length} on`;
   if (rulesShown && !force) return;            // not while somebody changes them
   rulesShown = true;
   $$('#r-cams input').forEach(i => i.checked = isOn(i.value));
-  $('#r-auto').checked = !!rules.auto_seats;
   $('#r-sit').value = rules.sit_after;
   $('#r-gone').value = rules.gone_after;
   $('#r-clips').checked = !!rules.clips;
@@ -222,7 +213,7 @@ async function saving(btn, status, send) {
 $('#r-save').onclick = async () => {
   const r = await saving($('#r-save'), $('#r-status'), () => post('/api/seats/rules', {
     cameras: $$('#r-cams input').filter(i => i.checked).map(i => i.value),
-    auto_seats: $('#r-auto').checked, sit_after: +$('#r-sit').value, gone_after: +$('#r-gone').value,
+    sit_after: +$('#r-sit').value, gone_after: +$('#r-gone').value,
     clips: $('#r-clips').checked, clip_seconds: +$('#r-clip-s').value}));
   if (r.ok) { rules = r.rules; paintRules(true); loadNow().catch(() => {}); }
 };
@@ -242,7 +233,7 @@ function spanOf(ev, day) {
 async function loadNow() {
   const r = await api('/api/seats');
   seatsCfg = r.seats || {}; now = r.now || {}; todayRows = r.sittings || [];
-  rules = r.rules || rules; learning = r.learning || {}; blockedCfg = r.blocked || {};
+  rules = r.rules || rules;
   if (day.value === r.day) { dayRows = todayRows; paintDay(); }
   paintRules();
   paintNow(r.day);
@@ -270,12 +261,11 @@ function paintNow(today) {
   $('#k-time').textContent = total ? dur(total) : '0';
   $('#now-hint').textContent = seats.length ? 'click a seat for its history' : '';
 
-  // A camera that is on but has no seat yet: say that they are being found.
+  // A camera that is on but has no seat yet: say where they are put.
   const finding = on.filter(c => (!one || c === one) && !(seatsCfg[c] || []).length).map(c =>
     `<div class="h-card s-empty seat-finding"><div class="h-body"><b>${esc(camName(c))}</b>
-      <span class="h-text">Finding the seats - one is added where somebody stays put for about a
-        minute and a half${learning[c] ? ` (${plural(learning[c], 'place')} being watched now)` : ''}.</span>
-      <span class="h-since">Or draw them under <b>Draw seats</b>.</span></div></div>`).join('');
+      <span class="h-text">No seats yet - drag them, or press Suggest, under <b>Draw seats</b>.</span>
+      </div></div>`).join('');
   const grid = $('#grid');
   if (!seats.length) {
     grid.innerHTML = finding || (on.length ? '<p class="empty">No seats on this camera yet.</p>'
@@ -452,7 +442,7 @@ clipDel.onclick = async () => {
 };
 
 // ------------------------------------------------------------ setting up the seats
-const edit = {cam: null, seats: [], sel: -1, dirty: false, nope: [], forget: false};
+const edit = {cam: null, seats: [], sel: -1, dirty: false};
 function changed() { edit.dirty = true; $('#s-status').textContent = 'Not saved yet'; }
 const cv = $('#s-canvas'), simg = $('#s-img');
 let drag = null;
@@ -461,7 +451,6 @@ function loadEditor(cam) {
   edit.cam = cam;
   edit.seats = (seatsCfg[cam] || []).map(s => ({id: s.id, name: s.name, box: s.box.slice()}));
   edit.sel = -1; edit.dirty = false;
-  edit.nope = (blockedCfg[cam] || []).map(b => b.slice()); edit.forget = false;
   simg.onload = () => { fit(); draw(); };
   simg.src = `/frame/${encodeURIComponent(cam)}.jpg?w=960&overlay=0&caption=0&t=${Date.now()}`;
   paintList();
@@ -473,18 +462,6 @@ function draw() {
   const g = cv.getContext('2d'), W = cv.width, H = cv.height;
   g.clearRect(0, 0, W, H);
   g.font = '600 12px "Segoe UI", sans-serif';
-  // Places whose seat was deleted: never a seat again by itself.
-  edit.nope.forEach(([x1, y1, x2, y2]) => {
-    g.fillStyle = 'rgba(220, 38, 38, .10)';
-    g.fillRect(x1 * W, y1 * H, (x2 - x1) * W, (y2 - y1) * H);
-    g.setLineDash([6, 4]); g.strokeStyle = '#dc2626'; g.lineWidth = 2;
-    g.strokeRect(x1 * W, y1 * H, (x2 - x1) * W, (y2 - y1) * H);
-    g.setLineDash([]);
-    const tw = g.measureText('not a seat').width;
-    g.fillStyle = '#dc2626'; g.fillRect(x1 * W, y2 * H - 18, tw + 10, 18);
-    g.fillStyle = '#fff'; g.fillText('not a seat', x1 * W + 5, y2 * H - 5);
-  });
-  $('#s-forget').hidden = !edit.nope.length;
   edit.seats.forEach((s, i) => {
     const [x1, y1, x2, y2] = s.box, on = i === edit.sel;
     g.fillStyle = on ? 'rgba(20, 184, 166, .28)' : 'rgba(20, 184, 166, .14)';
@@ -510,13 +487,8 @@ function paintList() {
     const i = +row.dataset.i;
     $('input', row).oninput = (e) => { edit.seats[i].name = e.target.value; changed(); draw(); };
     $('input', row).onfocus = () => { edit.sel = i; draw(); $$('#s-list .seat-item').forEach(r => r.classList.toggle('on', r === row)); };
-    $('button', row).onclick = () => { drop(edit.seats.splice(i, 1)); edit.sel = -1; changed(); paintList(); draw(); };
+    $('button', row).onclick = () => { edit.seats.splice(i, 1); edit.sel = -1; changed(); paintList(); draw(); };
   });
-}
-
-// A saved seat deleted: its place shows as "not a seat" at once (kept so on Save).
-function drop(gone) {
-  gone.filter(s => s.id).forEach(s => edit.nope.push(s.box.slice()));
 }
 
 function at(e) {
@@ -574,14 +546,12 @@ $('#s-suggest').onclick = async () => {
     : 'Nothing new found - drag boxes by hand';
   paintList(); draw();
 };
-$('#s-clear').onclick = () => { drop(edit.seats); edit.seats = []; edit.sel = -1; changed(); paintList(); draw(); };
-$('#s-forget').onclick = () => { edit.nope = []; edit.forget = true; changed(); draw(); };
+$('#s-clear').onclick = () => { edit.seats = []; edit.sel = -1; changed(); paintList(); draw(); };
 $('#s-save').onclick = async () => {
   const r = await saving($('#s-save'), $('#s-status'), () =>
-    post(`/api/seats/${encodeURIComponent(edit.cam)}`, {seats: edit.seats, forget: edit.forget}));
+    post(`/api/seats/${encodeURIComponent(edit.cam)}`, {seats: edit.seats}));
   if (r.ok) {
     seatsCfg[edit.cam] = r.seats;
-    blockedCfg[edit.cam] = r.blocked || [];
     edit.dirty = false;
     loadEditor(edit.cam);
     loadNow().then(() => paintRules(true)).catch(() => {});
